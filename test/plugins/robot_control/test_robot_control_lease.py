@@ -337,3 +337,14 @@ def test_health_unlock_and_reconnect_are_refused_while_the_robot_is_leased():
     lease.release()
     assert robot_action(lab.ctx, SERIAL, "Reconnect") is None
     assert calls == ["resume", "reconnect"]
+
+
+def test_a_force_zeroed_by_a_controller_switch_is_forgotten():
+    """Switching away from compliance zeroes the force: robot_control no longer counts the arm as in use."""
+    lab = Lab()
+    lab.compliance()
+    lab.arm.wrenches_sent.attach(partial(lab.plugin._wrench_sent, KEY))
+    lab.plugin._apply_force(lab.ctx, KEY, lab.arm, np.array([0.0, 0.0, 5.0]))
+    assert np.any(lab.plugin._applied_force[KEY])
+    lab.arm._zero_force_before_stopping([CARTESIAN_COMPLIANCE_CONTROLLER])
+    assert KEY not in lab.plugin._applied_force

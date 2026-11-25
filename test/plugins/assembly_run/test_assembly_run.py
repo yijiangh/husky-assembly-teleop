@@ -847,6 +847,11 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
         refused = plugin._settings_refused
         plugin.request_settings(spiral=True)
         assert "Settings refused: 0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
+        # * The grasp settings are taken: a close waiting for Confirm asks again under them.
+        plugin.request_settings(grasp_stiffness=2000.0)
+        plugin.request_settings(grasp_stiffness=2000.0, spiral=True)
+        assert plugin._settings_refused == refused + 2 and plugin.view.settings == RunSettings(grasp_stiffness=2000.0)
+        await settle(plugin)
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())
@@ -1087,7 +1092,7 @@ def test_the_grasp_settings_are_checked_saved_and_shown_back_by_the_panel(tmp_pa
             assert plugin._message.startswith("Settings refused") and words in plugin._message
             assert plugin.view.settings == RunSettings()
         panel = plugin._panel = RunPanel(lab.ctx, plugin)
-        assert (panel._grasp.value, panel._grasp_stiffness.value) == ("compliance", 500.0)
+        assert (panel._grasp.value, panel._grasp_stiffness.value) == ("compliance", 1500.0)
         panel._grasp_stiffness.callback(2000.0)
         panel._grasp.callback("joint")
         await settle(plugin)
@@ -1427,3 +1432,28 @@ def test_a_placement_that_is_no_pose_is_refused(tmp_path):
 
     plugin = asyncio.run(scenario())
     assert plugin.view.settings == RunSettings() and not runs(lab)
+
+
+def test_a_new_run_takes_neither_the_grasp_offsets_nor_retreat_compliant_over(tmp_path):
+    """Both were for one run's bars: the new run's grasps are as authored, its retreat stiff; the rest goes over."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        process.grasp_offsets = {"B1_H": (20.0, -30.0)}
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        plugin.request_settings(retreat_compliant=True, insert_push_n=7.0)
+        await settle(plugin)
+        assert plugin.view.settings.retreat_compliant
+        plugin.request_new_run()
+        lab.ctx.t += 1.0
+        plugin.request_new_run()
+        await settle(plugin)
+        plugin.update(lab.ctx)
+        return plugin, process
+
+    plugin, process = asyncio.run(scenario())
+    settings = plugin.view.settings
+    assert not settings.grasp_offsets and not settings.retreat_compliant and settings.insert_push_n == 7.0
+    assert process.grasp_offsets == {} and process.grasp_requests[-1] == {}

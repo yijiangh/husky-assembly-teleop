@@ -727,3 +727,17 @@ def test_a_run_mixing_a_simulation_and_motive_writes_nothing(tmp_path, relay_sim
     with pytest.raises(FileNotFoundError, match=why):
         run.start_file()
     assert run.progress is None and not list(tmp_path.rglob("*.json"))
+
+
+def test_a_box_unticked_stays_unticked_in_another_run_of_the_arm(tmp_path):
+    """Unticked after the older run ticked it: the older run, resumed, does not bring the tick back."""
+    old, new = _run(tmp_path), Run.new(_robot(), ARM, DATA, tmp_path)
+    old.tick("Area clear", True, 100.0)
+    old.tick("E-stop at hand", True, 100.0)
+    new.adopt_checklist(old)
+    new.tick("Area clear", False, 200.0)
+    old.adopt_checklist(new)
+    assert old.ticks == {"E-stop at hand": 100.0}
+    old.tick("Area clear", True, 300.0)
+    old.adopt_checklist(new)
+    assert "Area clear" in old.ticks, "ticked again since"

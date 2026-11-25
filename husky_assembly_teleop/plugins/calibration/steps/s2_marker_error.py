@@ -76,8 +76,9 @@ class MarkerError(CalibrationStep):
         base = run.robot.base
         if run.refining or tool is None or base.state.marker_error is None or tool.marker_error is None:
             return
-        # * Errors measured with an earlier definition of either body do not count for the new one.
-        if run.marker_made is not None and run.changes(run.marker_made):
+        # * Errors measured with an earlier definition of either body, or too long ago, do not count any more.
+        if run.marker_made is not None and run.changes(run.marker_made) or \
+                run.marker_max is not None and run.marker_age(self.cal.wall_now()):
             run.reset_markers()
         errors = (base.state.marker_error, tool.marker_error)
         run.marker_max = list(errors) if run.marker_max is None else list(np.maximum(run.marker_max, errors))

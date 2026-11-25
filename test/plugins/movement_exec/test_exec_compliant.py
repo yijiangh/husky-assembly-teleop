@@ -24,8 +24,9 @@ from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CO
 from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import RETREATED, RIGID_DONE, SETTLE_WINDOW, STALLED
-from husky_assembly_teleop.shared.movement_exec_contract import DONE, SERVO_INDEX
+from husky_assembly_teleop.shared.movement_exec_contract import DONE, SERVO_INDEX, Carried
 from husky_assembly_teleop.shared.runs.runs import RunSettings
+from scaffolding_assembly_core.ids import robot_id
 
 pytestmark = pytest.mark.safety
 
@@ -58,7 +59,7 @@ def test_b21s_insert_ends_when_the_left_screw_stalls_1_s_into_the_compliant_part
     it. The record holds the split achieved, the stall time (from TIGHTEN to the stall), the left arm's early way back,
     the right arm's rest of the line and its settle, the switch to compliance and back; the left screw alone tightened.
     """
-    lab = compliant_lab(("B21_J", 4))
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
     left = screw_driver(lab, "left_ur_arm")
     left.screw_stall_after = None
     seen = {}
@@ -153,7 +154,7 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     The replan asks for the plan's goals in 1 mm steps; the record has every phase and the tail; the ungrasp folded
     into the step is done; every arm ends under the joint controller at the tail's end.
     """
-    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True))
+    lab = compliant_lab(("B20_R", 1), RunSettings(retreat_compliant=True, insert_split_mm=5.0))
     request = along(lab, "B20_R_retreat", RETREAT_STEP, goals=True)
     start = np.array(request.route.result.trajectory.positions[0])
     planner = lab.ctx.plugins["motion_planner"] = TailPlanner(lab, start + RETREAT_STEP)
@@ -190,3 +191,16 @@ def test_b20s_retreat_breaks_out_compliant_then_runs_the_tail_replanned_to_the_g
     live = np.concatenate([arm.joint_vector() for arm in lab.cindy.arms.values()])
     np.testing.assert_allclose(live, start + RETREAT_STEP, atol=1e-3)
     assert ungrasp["movement"] == "B20_R_ungrasp" and ungrasp["outcome"]["status"] == "opened"
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("first", [True, False], ids=["the first try", "a retry"])
+def test_an_insert_fixes_where_the_carry_starts_from_once(first):
+    """The first insert that ran keeps its start joints in the carry; a retry from part way in does not move them."""
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
+    request = along(lab, "B21_J_insert", INSERT_STEP)
+    live = dict(lab.ctx.scene.snapshot.robots[robot_id(request.serial)].joints)
+    kept = None if first else {"left_ur_arm_elbow_joint": 0.1}
+    lab.plugin._carried = Carried(request.loaded, "B21_J", 4, request.serial, 0.0, kept)
+    execute(lab, request)
+    assert lab.plugin.carried.joints == (pytest.approx(live) if first else kept)

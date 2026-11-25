@@ -2,8 +2,9 @@
 Remember how far an assembly got: which actions are done, where each robot was left, and the run's settings.
 
 On a process load it continues the assembly run used last when it was made on exactly these process files, else the
-operator chooses (`shared/runs/runs.py`); then the first pending action becomes current, and its first step is
-selected once the action's robot is live. Other plugins read and change it through `AssemblyRunContract`.
+operator chooses (`shared/runs/runs.py`); then the run's current action, or the next pending one after it, becomes
+current, and its first step is selected once the action's robot is live. Mark done moves on to the next pending
+one. Other plugins read and change it through `AssemblyRunContract`.
 
 Its part of the Assembly tab is Mark done and Reopen, the settings and the run. The run follows the process panel: a
 movement picked there becomes current, except while movement_exec has a robot's lease for a step; each action's mark
@@ -44,7 +45,7 @@ from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, 
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.second_press import SecondPress
 from .panel import PanelStatus, RunPanel
-from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
+from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, GRASP_SETTINGS, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
                      RunWrites)
 
 if TYPE_CHECKING:
@@ -239,7 +240,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     def request_settings(self, **changes: Any) -> None:
         """Change run settings (`RunSettings` fields); saved with the run, which this starts if there is none."""
         refusal = (self._settings_problem(changes) or self._not_open() or self._offered_first()
-                   or self._step_running(self._ctx))
+                   or ("" if GRASP_SETTINGS.issuperset(changes) else self._step_running(self._ctx)))
         if refusal:
             self._settings_refused += 1
             self._refused("Settings", refusal)
@@ -545,11 +546,11 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._go_task = None
 
     def _resume_point(self) -> tuple[str, int | None] | None:
-        """Where to carry on: the saved current action if still pending, else the first pending; None if all done."""
+        """Where to carry on: the saved current action, else the next pending one after it; None if all are done."""
         saved = self._run.progress.current if self._run is not None else None
         if saved is not None and self.view.statuses.get(saved[0]) == PENDING:
             return saved
-        action_id = first_pending(self._progress(), self._loaded.process.schedule)
+        action_id = first_pending(self._progress(), self._loaded.process.schedule, saved[0] if saved else None)
         return (action_id, None) if action_id is not None else None
 
     def _adopt(self, ctx: PluginContext, run: Run) -> None:

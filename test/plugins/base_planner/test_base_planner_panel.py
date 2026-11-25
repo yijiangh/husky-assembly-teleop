@@ -401,3 +401,19 @@ def test_the_floor_shows_a_run_until_another_base_drives_or_it_ended_long_ago():
     alice.ended_at = None
     planner._runs["belle"] = Run(path=path, path_id=1, sent_at=20.0)
     assert panel._floor_run(ctx) is None, "Belle drove since"
+
+
+@pytest.mark.safety
+def test_another_robot_has_no_target_and_clearance_on_again():
+    """The target was the other robot's: Plan asks for one; the box unticked for that robot is ticked again."""
+    panel = panel_for(Planner())
+    ctx = SimpleNamespace(now=lambda: 0.0, log_warn=lambda _text: None, **WATCHES)
+    panel.update(ctx)
+    panel.clearance.value = False
+    panel.update(ctx)
+    assert not panel.clearance.value, "the same robot"
+    panel._choose_robot("belle")
+    panel.update(ctx)
+    assert panel.clearance.value and not panel._has_target
+    panel._plan(ctx)
+    assert panel._message == "set a target first"

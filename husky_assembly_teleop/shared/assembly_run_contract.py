@@ -145,7 +145,8 @@ def exported_end(loaded: LoadedProcess, action_id: str, at: str = "") -> RobotRe
     return RobotRecord(state.base, dict(state.joints), ASSUMED, at)
 
 
-def first_pending(progress: Progress, schedule: Sequence[str]) -> str | None:
-    """The first scheduled action not done, or None when all are."""
-    return next((action_id for action_id in schedule
+def first_pending(progress: Progress, schedule: Sequence[str], start: str | None = None) -> str | None:
+    """The first scheduled action not done, from `start` on and round to the beginning; None when all are done."""
+    at = list(schedule).index(start) if start in schedule else 0
+    return next((action_id for action_id in [*schedule[at:], *schedule[:at]]
                  if progress.actions.get(action_id, ActionRecord()).status != DONE), None)

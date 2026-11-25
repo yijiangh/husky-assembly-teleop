@@ -10,7 +10,8 @@ The assembly guide: the process part by part, Prepare → Check → Go, each par
   Prepare drives even when the base stands within the arrival tolerance.
 - Prepare and Go are for parts that move a robot. A part by hand is confirmed by ticking its boxes and Done (the
   executor records it); Mark done is Done too. Prepare and Go stay grey there, but Prepare on placing the bar zeroes
-  the force sensors (an operator's press only: Auto and God never zero).
+  the force sensors (an operator's press only: Auto and God never zero; a second zero for an action asks first).
+- What is set for a part (motion time, Ignore built bars) ends with it (`_take`).
 - A part is done by its result: the executor's finished movements (`MovementExecContract.finished`, whoever sent
   them), the run's mark, a drive ended at its goal. A part fixed by hand one layer down (Plan › Base, Plan › Arm,
   Control) is at its end: Done goes on with one press; anything else asks twice (Skip).
@@ -43,7 +44,7 @@ import asyncio
 import math
 from dataclasses import replace
 from html import escape
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Collection
 
 import viser
 
@@ -84,7 +85,7 @@ from ...ui.style import (BUSY, CURRENT, FAIL, OK, SECTION_CTRL, block, check_chi
                          chip_row, note, section, warning)
 from ...world.arm_reach import out_of_reach
 from ...world.checks import BAD, GOOD, INFO, PENDING, WARN, Check
-from .kinds import KINDS, ZERO_ASK_HELD, HandKind, Kind, description
+from .kinds import KINDS, HandKind, Kind, description
 from .parts import (ARM_ARRIVED, DRIVE, EXECUTED, GRIPPER, HAND, INSERT, MARK, MOVE, NOTHING_TO_MOVE, PARK, REFUSED,
                     RETREAT, SERVO, GuidePart, arm_arrived, base_arrived, floor_pose, schedule_parts)
 
@@ -194,6 +195,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         #: Parts whose result is not good, by index, as their result chip: a park that did not get there, a drive the
         #: next part finds no goal from.
         self._flagged: dict[int, Check] = {}
+        #: The part that flagged a drive, by the drive's index: once it ran, the drive was good after all.
+        self._flagged_by: dict[int, GuidePart] = {}
         #: What the parts were built from; the selection last followed; a selection asked for (action, movement, at).
         self._built: tuple | None = None
         self._followed: tuple[str, str] | None = None
@@ -230,14 +233,16 @@ class AssemblyGuidePlugin(HuskyPlugin):
         #: The part last planned and the planner that planned it, for its planner chip.
         self._planned: tuple[GuidePart, str] | None = None
         self.goal_text = ""
+        #: The motion time, seconds, and the part it, the goal line and Ignore built bars are for (`_take`).
         self.traj_time = 10.0
+        self._timed: GuidePart | None = None
         #: The part whose move runs, from Go until the executor ends; Motion time is greyed only then. The plan
         #: waiting for Go (part, route, its question by path), timed again when Motion time changes.
         self.moving: GuidePart | None = None
         self._waiting: tuple | None = None
-        #: The IK solution a support approach's goal takes: (part index, loaded process, nearer solutions passed
-        #: over), set by the pop-up's Next; another part or process starts at the nearest.
-        self._ik_skip: tuple = (None, None, 0)
+        #: The IK solution a support approach's goal takes: (part, nearer solutions passed over), set by the pop-up's
+        #: Next; another part, the parts built again, or the part redone starts at the nearest.
+        self._ik_skip: tuple[GuidePart | None, int] = (None, 0)
         #: The part the pop-up offers a choice for; the part whose notes say where to move the grasp.
         self._ik_failed: GuidePart | None = None
         self._grasp_hint: GuidePart | None = None
@@ -324,9 +329,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._description = gui.add_html("")
             self._list = gui.add_html("")
             with gui.add_folder("Settings", expand_by_default=False):
-                ignore = gui.add_checkbox("Ignore built bars", False,
-                                          hint="Plan as if the built bars were not there: for tests in the air")
-                ignore.on_update(ctx.defer_value("ignore built bars", lambda value: setattr(
+                self._ignore = gui.add_checkbox("Ignore built bars", False,
+                                                hint="Plan the part shown as if the built bars were not there: for "
+                                                     "tests in the air. Off again at the next part")
+                self._ignore.on_update(ctx.defer_value("ignore built bars", lambda value: setattr(
                     self, "ignore_built", bool(value)), operator_only=True))
                 one_arm = gui.add_checkbox("Free moves on the arm planner", True,
                                            hint="A transfer with empty tools, a way home, an approach, a leave, one "
@@ -426,10 +432,26 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self.procedure.preview_path, self.procedure.preview = path, 0.0
         self.procedure.prompt = question(path)
 
-    def ik_skip(self, ctx: PluginContext, part: GuidePart) -> int:
-        """How many nearer IK solutions `part`'s goal passes over (the pop-up's Next); 0 for another part or process."""
-        index, loaded, skip = self._ik_skip
-        return skip if index == self._index_of(part) and loaded is self._run(ctx).view.process else 0
+    def motion_time(self, part: GuidePart) -> float:
+        """The motion time of `part`, seconds: the one set for it, else its routine's default."""
+        return self.traj_time if part is self._timed else DEFAULT_TRAJ_TIME.get(part.routine, 10.0)
+
+    def _take(self, part: GuidePart) -> None:
+        """Start a part with its own values: nothing set for another part, e.g. a slow transfer's time, carries over.
+
+        Its routine's motion time, no goal line, Ignore built bars off; Clearance ticked again for another robot.
+        """
+        before = self._timed
+        if part is before:
+            return
+        self.traj_time, self._timed = self.motion_time(part), part
+        self.goal_text, self.ignore_built = "", False
+        if before is not None and self.serial_for(before) != self.serial_for(part):
+            self.procedure.clearance.value = True
+
+    def ik_skip(self, part: GuidePart) -> int:
+        """How many nearer IK solutions `part`'s goal passes over (the pop-up's Next); 0 for another part."""
+        return self._ik_skip[1] if part is self._ik_skip[0] else 0
 
     def next_ik_solution(self, ctx: PluginContext) -> None:
         """The pop-up's Next: Prepare the failed approach again, to the next IK solution."""
@@ -440,7 +462,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if part is not self.part:
             self._refuse(ctx, NEXT_SOLUTION, f"it answers {part.label}: Back or Next to it, then Prepare")
             return
-        self._ik_skip = (self.index, self._run(ctx).view.process, self.ik_skip(ctx, part) + 1)
+        self._ik_skip = (part, self.ik_skip(part) + 1)
         self.prepare(ctx)
 
     def move_grasp(self) -> None:
@@ -457,7 +479,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         """Open the pop-up for a support approach's failed goal or plan (`offers_choice`)."""
         if offers_choice(part.routine, why):
             self._ik_failed = part
-            self._choice.offer(part.label, self.ik_skip(ctx, part) + 1, why)
+            self._choice.offer(part.label, self.ik_skip(part) + 1, why)
 
     def is_done(self, ctx: PluginContext, part: GuidePart, index: int) -> bool:
         """Whether a part's result is there: the executor finished it, the run marked it, or the guide judged it.
@@ -607,6 +629,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
                 self._skipped.clear()
                 self._flagged.clear()
                 self._reopened.clear()
+                self._forget_results(range(len(self.parts)))
                 ctx.log_info("guide: another run: every part is to do again")
             self._run_folder, self._marks = view.folder, dict(view.statuses)
             return
@@ -617,8 +640,27 @@ class AssemblyGuidePlugin(HuskyPlugin):
                 self._done -= redone
                 self._skipped -= redone
                 self._flagged = {index: flag for index, flag in self._flagged.items() if index not in redone}
+                self._forget_results(redone)
                 ctx.log_info(f"guide: {action} reopened: its parts are to do again")
         self._marks = dict(view.statuses)
+
+    def _forget_results(self, indices: Collection[int]) -> None:
+        """Forget what these parts' last tries left: how they ended, the boxes ticked, the IK solution, the doubts."""
+        parts = [self.parts[index] for index in indices]
+
+        def left_by(part: GuidePart | None) -> bool:
+            """Whether `part` is one of them."""
+            return any(part is each for each in parts)
+
+        self._outcomes = {index: outcome for index, outcome in self._outcomes.items() if index not in indices}
+        if left_by(self._owner) and not self.procedure.running:
+            self.procedure.outcome = None
+        if left_by(self._hand.shown):
+            self._hand.forget()
+        if left_by(self._ik_skip[0]):
+            self._ik_skip = (None, 0)
+        if left_by(self._unsettled):
+            self._unsettled = None
 
     def _part_of(self, ctx: PluginContext, action: str, movement: str) -> int:
         """The first part of `movement` in `action` not done yet, else its first part; the current one if none."""
@@ -639,8 +681,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._again_press.forget()
         self.index = index
         part = self.parts[index]
-        if part.kind == MOVE and self.owner is None:
-            self.traj_time = DEFAULT_TRAJ_TIME.get(part.routine, self.traj_time)
+        if self.owner is None:
+            self._take(part)
         if select and not self.procedure.running:
             self._select(ctx, part)
 
@@ -757,7 +799,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         """Get the part shown ready and ask Go; `rehearse`: its dry run (Mode Off only).
 
         Not for a part by Done, but placing the bar: there Prepare zeroes the force sensors, meant before the bar is in
-        the tools; once a box is ticked or the part is done it asks a second press. Auto and God never press it.
+        the tools; once the sensors were zeroed for the action, a box is ticked or the part is done, it asks a second
+        press. Auto and God never press it.
         """
         button = "Rehearse" if rehearse else "Prepare"
         if why := self._cannot(ctx, "Prepare"):
@@ -770,10 +813,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if self._zeroes(part):
             if why := self._hand.zero_blocked(ctx):
                 self._refuse(ctx, button, why)
-            elif not self._hand.looks_held(ctx, part) or self._again_press.press(ctx.now(), str(self.index)):
+            elif not (asks := self._hand.zero_asks(ctx, part)) or self._again_press.press(ctx.now(), str(self.index)):
                 self._hand.zero(ctx, "guide Prepare", button)
             else:
-                self._refuse(ctx, button, ZERO_ASK_HELD, ask=True)
+                self._refuse(ctx, button, asks, ask=True)
             return
         if self.is_done(ctx, part, self.index):
             if not self._again_press.press(ctx.now(), str(self.index)):
@@ -816,6 +859,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._grasp_hint = None
         self._used.touch()
         self._select(ctx, part)
+        self._take(part)
         self._owner = part
         self.procedure.start(ctx, "rehearse" if rehearse else part.label,
                              self._run_part(ctx, part, self.index, rehearse), f"guide {part.label}")
@@ -975,6 +1019,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         self._outcomes = {index: outcome for index, outcome in self._outcomes.items() if index < self.index}
         # * Nothing of what ran before counts again: the last plan's goal and basis, the boxes ticked, the presses.
         self._goal = self._basis = self._planned = self._ran = self._auto_at = None
+        self._ik_skip = (None, 0)
         self._unsettled = self._mark_now = self._assume = self._forced = self._by_done = None
         self.goal_text = ""
         self._reopened = {index for index in range(self.index, len(self.parts))
@@ -1043,6 +1088,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
             return
         self._ran = part
         self._reopened.discard(index)
+        for drive in [each for each, by in self._flagged_by.items() if by is part]:
+            del self._flagged_by[drive]
+            self._flagged.pop(drive, None)
         self._record(ctx, "done", part)
         ctx.log_info(f"guide: {part.label} done")
         after = None
@@ -1051,7 +1099,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
                                                                           else None)
         following = self.parts[after] if after is not None else None
         if part.kind == MARK and following is not None:
-            # ! The run moves its current step on a mark (to its first pending action): select the next part at once,
+            # ! The run moves its current step on a mark (to the next pending action): select the next part at once,
             #   or the guide takes that move for the operator's pick.
             self._select(ctx, following)
         if self.mode != OFF:
@@ -1150,6 +1198,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
             return ""
         self._done.discard(drive)
         self._skipped.discard(drive)
+        self._flagged_by[drive] = part
         self._flagged[drive] = Check("not good", BAD, f"{part.label} finds no goal from where this drive ended "
                                                       f"({why}): Prepare drives it again")
         return f"; {self.parts[drive].label} is flagged not good: Back to it and Prepare drives again"
@@ -1383,7 +1432,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
             self._planned = (part, ARM_PLANNER_NAME)
             return found
         goal_joints = goal_base = None
-        skip = self.ik_skip(ctx, part)
+        skip = self.ik_skip(part)
         if part.routine in IK_GOALS:
             self.procedure.doing = "solving the goal at the live base" + (f" (IK solution {skip + 1})" if skip else "")
             check = await planner.request_ik(MotionPlanRequest(
@@ -1480,7 +1529,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
         # * The design's goal; for an approach, the joints where its hold grasps (`MovementSpec.ik_reference`).
         authored = spec.ik_reference or {}
         reference = {name: authored[name] for name in names if name in authored}
-        skip = self.ik_skip(ctx, part)
+        skip = self.ik_skip(part)
         which = f", IK solution {skip + 1}" if skip else ""
         goal_base = None
         if part.routine in IK_GOALS:
@@ -1564,6 +1613,9 @@ class AssemblyGuidePlugin(HuskyPlugin):
             return
         self._forget_redone(ctx)
         self._keep_outcome()
+        if self.owner is None:
+            # * The part shown may have been chosen while another ran.
+            self._take(self.part)
         # * A part redone counts its end again once its robot left it: getting there afterwards is a new result.
         self._reopened = {index for index in self._reopened
                           if not self._robot_live(ctx, self.parts[index]) or self.at_end(ctx, self.parts[index])}
@@ -1655,6 +1707,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
                                    + chip_row("live", "".join(map(check_chip, self._live(ctx, part))))
                                    + chip_row("result", "".join(map(check_chip, self._results(ctx, self.index)))))
             self._guide_line.content = chip_row("guide", self._guide_chips(ctx))
+        set_changed(self._ignore, value=self.ignore_built)
         self._draw_buttons(ctx, now)
         kind = part.kind if part is not None else None
         if kind != self._folder_shown:

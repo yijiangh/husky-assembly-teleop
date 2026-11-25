@@ -57,6 +57,9 @@ ZERO_ASK = ("Only with NO bar in the tools: zeroing tares away whatever they hol
 #: What it asks once the part says the bar is in the tools: the press still counts, the operator knows best.
 ZERO_ASK_HELD = ("The bar looks clamped already (a box is ticked or the part is done): zeroing now tares its weight "
                  "away. Press again to zero anyway.")
+#: What it asks once the sensors were zeroed for the action: a second zero mostly comes with the bar mounted by now.
+ZERO_ASK_AGAIN = ("The force sensors were zeroed for this action already: with the bar mounted since, zeroing again "
+                  "tares its weight away. Press again to zero anyway.")
 
 
 def description(kind: Kind, part: GuidePart | None = None) -> str:
@@ -229,7 +232,8 @@ class MoveKind(Kind):
         self._time = gui.add_slider("Motion time", min=1.0, max=MAX_TRAJ_TIME, step=0.5, initial_value=10.0,
                                     hint="How long the move takes, seconds; the arms' limits may need longer. "
                                          "Changeable until Go (a plan waiting for Go is timed again, its preview "
-                                         "too); greyed while the move runs, which keeps the time it was sent with")
+                                         "too); greyed while the move runs, which keeps the time it was sent with, "
+                                         "and while another part runs or waits for Go")
         self._time.on_update(ctx.defer_value("motion time", lambda value: self.guide.set_traj_time(float(value)),
                                              operator_only=True))
         self._rehearse(ctx, gui)
@@ -238,12 +242,15 @@ class MoveKind(Kind):
         """The goal line, and the motion time."""
         self._show_rehearse()
         self._goal.content = block(values(escape(self.guide.goal_text or "goal: solved at Prepare")))
-        if abs(self._time.value - self.guide.traj_time) > 1e-6:
-            self._time.value = self.guide.traj_time
-        # * The move sent has its timing: a change then would not reach it.
-        moving = self.guide.moving is part
-        if self._time.disabled != moving:
-            self._time.disabled = moving
+        seconds = self.guide.motion_time(part)
+        if abs(self._time.value - seconds) > 1e-6:
+            self._time.value = seconds
+        # * The move sent has its timing: a change then would not reach it. Another part's plan waiting for Go would
+        #   take it instead.
+        owner = self.guide.owner
+        greyed = self.guide.moving is part or owner is not None and owner is not part
+        if self._time.disabled != greyed:
+            self._time.disabled = greyed
 
     def live(self, ctx: PluginContext, part: GuidePart) -> list[Check]:
         """How far the arms still are from the goal."""
@@ -266,7 +273,8 @@ class HandKind(Kind):
             "Done: the executor records it, the next part follows.")
     #: The bar placed in the tools and clamped.
     PLACE_GOAL = "Place the bar in the tools and clamp it, by hand."
-    PLACE_TODO = (f"Prepare (or {ZERO}, twice), while the tools are still empty: zeroes the arms' force sensors.",
+    PLACE_TODO = (f"Prepare (or {ZERO}, twice), while the tools are still empty: zeroes the arms' force sensors; "
+                  f"again only on a second press.",
                   "Put the bar into both tools' jaws.",
                   "Tighten each gripper screw with the tool's own buttons until it stalls, one button at a time (B1 "
                   "and B2 together put the arm in free drive).",
@@ -299,6 +307,11 @@ class HandKind(Kind):
         self.boxes = [gui.add_checkbox(f"box {index + 1}", False, visible=False) for index in range(HAND_BOXES)]
         self._items: list[tuple[str, str]] = []
         self._for: GuidePart | None = None
+
+    @property
+    def shown(self) -> GuidePart | None:
+        """The part the boxes are for, or None."""
+        return self._for
 
     @property
     def ticked(self) -> bool:
@@ -338,7 +351,7 @@ class HandKind(Kind):
             return
         held = self.looks_held(ctx, part)
         if not self._zero_press.press(ctx.now(), self._zero_key(serial, held)):
-            self.guide._refuse(ctx, ZERO, ZERO_ASK_HELD if held else ZERO_ASK, ask=True)
+            self.guide._refuse(ctx, ZERO, self.zero_asks(ctx, part) or ZERO_ASK, ask=True)
             return
         self.zero(ctx, "guide", ZERO)
 
@@ -371,6 +384,13 @@ class HandKind(Kind):
     def looks_held(self, ctx: PluginContext, part: GuidePart) -> bool:
         """Whether the part says the bar is in the tools already: a box ticked, or the part done."""
         return self.count[0] > 0 or self.guide.is_done(ctx, part, self.guide.index)
+
+    def zero_asks(self, ctx: PluginContext, part: GuidePart) -> str:
+        """Why one press of Prepare may not zero: the bar looks clamped, or it zeroed for the action already; or ""."""
+        if self.looks_held(ctx, part):
+            return ZERO_ASK_HELD
+        executor: MovementExecContract = ctx.require("movement_exec")
+        return ZERO_ASK_AGAIN if executor.zeroed(part.action) else ""
 
     def _zero_key(self, serial: str | None, held: bool) -> str:
         """What a first press of Zero force asked about: this part's robot, and whether the bar looked held."""
@@ -444,7 +464,9 @@ class InsertKind(Kind):
 
     def build(self, ctx: PluginContext, gui: viser.GuiApi) -> None:
         """The run's insert settings, Rehearse."""
-        self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5, initial_value=5.0,
+        default = RunSettings()
+        self._split = gui.add_slider("Insert split mm", min=0.0, max=30.0, step=0.5,
+                                     initial_value=default.insert_split_mm,
                                      hint="The insert's last millimetres run compliant (the run's setting)")
         self._spiral = gui.add_checkbox("Spiral", False, hint="The compliant part searches in a spiral; only for a "
                                                               "bar with two mating joints")
@@ -452,7 +474,6 @@ class InsertKind(Kind):
                                        initial_value=20.0, hint="Seconds the spiral takes to reach its 15 mm radius")
         self._turns = gui.add_slider("Spiral turns", min=SPIRAL_TURNS_RANGE[0], max=SPIRAL_TURNS_RANGE[1], step=1,
                                      initial_value=4, hint="Turns the spiral makes; pitch = 15 mm / turns")
-        default = RunSettings()
         self._cancel_weight = gui.add_checkbox("Cancel bar weight", default.insert_cancel_weight,
                                                hint="Take the bar's weight, measured at the insert's start before "
                                                     "anything moves, off the arms (the run's setting)")
@@ -545,8 +566,9 @@ class GripperKind(Kind):
                                             "gives way to the bar; joint holds the arm, so the close pulls the bar "
                                             "and the frame to the gripper")
         self._stiffness = gui.add_slider("Grasp stiffness", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
-                                         step=100.0, initial_value=500.0,
-                                         hint="The compliant grasp's stiffness along tool0 x, y, z, N/m")
+                                         step=100.0, initial_value=RunSettings().grasp_stiffness,
+                                         hint="The compliant grasp's stiffness along tool0 x, y, z, N/m; moved "
+                                              "while Go waits, the question is asked again with it")
         for widget, setting, kind in ((self._grasp, "grasp_controller", str),
                                       (self._stiffness, "grasp_stiffness", float)):
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:

@@ -53,11 +53,13 @@ class Run(FakeRun):
     """The run: marks and reopens at once."""
 
     def request_mark_done(self, action_id=None):
-        """Mark it done, then make the first pending action current at its first step, as the real run does."""
+        """Mark it done, then make the next pending action current at its first step, as the real run does."""
         super().request_mark_done(action_id)
         self.view.statuses[action_id] = DONE
         process = self.view.process.process
-        following = next((each for each in process.schedule if self.view.statuses[each] != DONE), None)
+        at = list(process.schedule).index(action_id)
+        following = next((each for each in [*process.schedule[at:], *process.schedule[:at]]
+                          if self.view.statuses[each] != DONE), None)
         if following is not None:
             self.request_set_current(following, first_step(process, process.actions[following], True))
 

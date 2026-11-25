@@ -10,6 +10,7 @@ import asyncio
 import json
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -31,7 +32,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
-from husky_assembly_teleop.shared.execution.force_sensors import ZERO_EVENT
+from husky_assembly_teleop.shared.runs.finished import ZERO_EVENT
 from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
@@ -40,8 +41,8 @@ from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFA
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
                                                                  REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
                                                                  SERVO_PART,
-                                                                 WITH_MOTION_PART, ExecRequest, ExecResult, PartPlan,
-                                                                 part_plan, step_parts)
+                                                                 WITH_MOTION_PART, Carried, ExecRequest, ExecResult,
+                                                                 PartPlan, part_plan, step_parts)
 from husky_assembly_teleop.shared.assembly_planning.joints import arm_joint_names
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.assembly_planning.route_result import RouteResult
@@ -1463,7 +1464,7 @@ def test_b21s_insert_tightens_the_left_screw_only_and_ends_when_it_stalls():
 
     The right screw only STOPs. The panel's live line shows the compliant part; the record is JSON.
     """
-    lab = compliant_lab(("B21_J", 4))
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
     next(driver for driver in lab.drivers if getattr(driver, "tool", None) is lab.tools["left_ur_arm"]) \
         .screw_stall_after = 4.0
     lines = []
@@ -1503,7 +1504,7 @@ def test_an_inserts_rigid_part_whose_hold_is_refused_is_hold_not_sent():
     The result, the record and the panel say HOLD NOT SENT, as a motion's; the pendant line is logged once, then the
     Exec banner.
     """
-    lab = compliant_lab(("B21_J", 4))
+    lab = compliant_lab(("B21_J", 4), RunSettings(insert_split_mm=5.0))
     next(driver for driver in lab.drivers if getattr(driver, "tool", None) is lab.tools["left_ur_arm"]) \
         .screw_stall_after = 2.0
 
@@ -1536,6 +1537,10 @@ def test_the_insert_settings_are_read_once_and_reach_its_plan():
         lab = compliant_lab(current, settings)
         lab.plugin.request_dry_run(True)
         return lab
+
+    lab = dry(("B21_J", 4), RunSettings())
+    execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
+    assert "then COMPLIANT 12.0 mm" in said(lab)[0]  # * the default: compliant before the joint touches
 
     lab = dry(("B21_J", 4), RunSettings(insert_split_mm=8.0))
     result, _held = execute(lab, along(lab, "B21_J_insert", INSERT_STEP))
@@ -1648,6 +1653,46 @@ def test_b21_hs_close_sets_the_runs_grasp_stiffness():
     assert arm.stiffness_service.sets == [[2000.0] * 3, [500.0] * 3]
 
 
+@pytest.mark.safety
+def test_b21_hs_close_asks_again_once_the_grasp_stiffness_changed():
+    """A stiffness changed while the close waits: asked again once it settled, and only that question's value is set.
+
+    A Confirm for the old question while the slider still moves closes nothing; a Cancel then still cancels.
+    """
+    lab = Lab(current=("B21_H", 3))
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+
+    async def opened(text: str):
+        while lab.plugin.prompt is None or text not in lab.plugin.prompt.text:
+            await asyncio.sleep(0)
+        return lab.plugin.prompt
+
+    async def scenario(ok: bool):
+        lab.run.view.settings = RunSettings(grasp_stiffness=1500.0)
+        future = lab.plugin.request_execute(lab.request("B21_H_close", serial="a200-0804", route=None))
+        first = await opened("COMPLIANT at 1500 N/m")
+        while lab.ctx.t - first.opened_at < 0.6:
+            await asyncio.sleep(0)
+        lab.run.view.settings = RunSettings(grasp_stiffness=2000.0)
+        (lab.plugin.request_confirm if ok else lab.plugin.request_cancel)()
+        if not ok:
+            return await future
+        await opened("COMPLIANT at 2000 N/m")
+        assert arm.end_effector._action.goals == []
+        lab.run.view.settings = RunSettings(grasp_stiffness=2500.0)
+        await opened("COMPLIANT at 2500 N/m")
+        await answer(lab)
+        return await future
+
+    assert run_guarded(scenario(False)).status == CANCELLED and arm.stiffness_service.sets == []
+    result = run_guarded(scenario(True))
+    assert result.status == DONE, result.reason
+    assert arm.stiffness_service.sets == [[2500.0] * 3, [500.0] * 3]
+    record = json.loads(json.dumps(lab.run.files()[-1]))
+    assert record["command"]["stiffness"] == 2500.0
+
+
 def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
     """The spiral's warning, asked through the job's prompts, names the robot and the movement first.
 
@@ -1725,3 +1770,60 @@ def test_a_stiff_retreat_whose_arms_moved_over_half_a_degree_since_the_plan_is_r
     assert lab.published() == 0
     for arm in lab.tools:
         assert commands(lab, arm) == []
+
+
+@pytest.mark.safety
+def test_a_zero_force_is_remembered_for_its_action_over_a_restart_and_dropped_by_a_new_run(tmp_path):
+    """From the press on; whoever asked; read back from the run's log; another run starts with none."""
+    lab = Lab(current=("B20_J", 1))
+    lab.run.view.folder = tmp_path / "runs" / "1"
+    lab.run.view.folder.mkdir(parents=True)
+
+    async def scenario():
+        zeroing = lab.plugin.request_zero_force(CINDY, "assembly tab", "B20_J", "B20_J_place_bar")
+        pressed = lab.plugin.zeroed("B20_J")
+        await zeroing
+        return pressed
+
+    assert run_guarded(scenario()) and lab.plugin.zeroed("B20_J") and not lab.plugin.zeroed("B21_J")
+    lab.plugin.request_forget("B20_J")
+    assert lab.plugin.zeroed("B20_J"), "redone with the bar still in the tools: the next zero asks too"
+    record_event(lab.run.view.folder, ZERO_EVENT, 1.0, action="B22_J", data={"arms": {"left_ur_arm": {"sent": True}}})
+
+    async def replay():
+        fresh = MovementExecPlugin()
+        fresh.setup(lab.ctx)
+        fresh.update(lab.ctx)
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if fresh.zeroed("B22_J"):
+                return fresh
+        raise AssertionError("not read back")
+
+    run_guarded(replay())
+    lab.run.view.folder = tmp_path / "runs" / "2"
+    assert not lab.plugin.zeroed("B20_J")
+
+
+@pytest.mark.safety
+def test_the_carry_goes_with_its_servo_redone_or_another_run():
+    """Reopened, or its servo to do again: dropped; only the insert to do again: kept. Another run: dropped."""
+    lab = Lab(current=("B20_J", 4))
+    at = step(lab.loaded, "B20_J_insert").movement_index
+    carried = Carried(lab.loaded, "B20_J", at, CINDY, 1.0)
+    for done, kept in (({(4, 4)}, True), ({(3, SERVO_INDEX)}, False), (None, False)):
+        lab.plugin._carried = carried
+        lab.plugin.request_forget("B20_J", done)
+        assert (lab.plugin.carried is not None) == kept, done
+    lab.plugin._carried = carried
+    lab.run.view.folder = Path("runs/1")
+    lab.plugin._replayed = (lab.loaded, Path("runs/1"))
+    lab.plugin.update(lab.ctx)
+    assert lab.plugin.carried is carried
+    lab.run.view.folder = Path("runs/2")
+
+    async def another_run():
+        lab.plugin.update(lab.ctx)
+
+    run_guarded(another_run())
+    assert lab.plugin.carried is None

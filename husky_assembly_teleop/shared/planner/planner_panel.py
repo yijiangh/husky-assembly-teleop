@@ -90,6 +90,8 @@ class PlannerPanel(HuskyPlugin):
         self._confirm = CommitConfirm()
         #: Commit's Clearance box, below it; its hint comes with `_add_path_controls`.
         self.clearance = ClearanceToggle("")
+        #: The robot that box was last set for: another robot starts with it ticked.
+        self._cleared_for: str | None = None
         #: The planner's plan whose message the panel shows; a new or changed plan replaces the message.
         self._shown: Plan | None = None
         #: How the panel's target differs from the ready plan's, or "": the chip then asks for a replan.
@@ -342,6 +344,10 @@ class PlannerPanel(HuskyPlugin):
         now = ctx.now()
         elapsed = 0.0 if self._last_tick is None else now - self._last_tick
         self._last_tick = now
+        if self.serial != self._cleared_for:
+            if self._cleared_for is not None:
+                self.clearance.value = True
+            self._cleared_for = self.serial
         plan = self._api.plan
         if plan is not self._shown:
             shown, self._shown = self._shown, plan

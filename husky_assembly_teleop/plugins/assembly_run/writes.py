@@ -48,6 +48,8 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "plan_tries": ("the search's tries", PLAN_TRIES_RANGE, "whole tries")}
 #: Each setting's type, its default's: a request is converted to it.
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
+#: Settings a step running does not refuse: the close asks its question again under them, then keeps what it asked.
+GRASP_SETTINGS = frozenset(("grasp_controller", "grasp_stiffness"))
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
 
@@ -157,7 +159,7 @@ class RunWrites:
             self._apply_mark(ctx, action_id, ends, assumed)
 
     def _apply_mark(self, ctx: PluginContext, action_id: str, ends: Mapping[str, RobotRecord], assumed: bool) -> None:
-        """Mark an action done, make the first pending one current, then write both."""
+        """Mark an action done, make the next pending one after it current, then write both."""
         if self._refused("Mark done", self._step_running(ctx)):
             return  # ? a step started while the run was being started
         try:
@@ -166,7 +168,7 @@ class RunWrites:
             self._refused("Mark done", str(refused))
             return
         self._run = run
-        following = first_pending(run.progress, self._loaded.process.schedule)
+        following = first_pending(run.progress, self._loaded.process.schedule, action_id)
         if following is not None:
             self._set_current(ctx, following)
         else:
@@ -239,9 +241,21 @@ class RunWrites:
         if self._refused("New run", self._step_running(ctx)):
             return
         self._starting = None
-        if await self._start(ctx, None) is not None:
-            self._say(f"new run {self._run.info.name}")
-            self._set_current(ctx, self._loaded.process.schedule[0])
+        kept = self._settings
+        # ! What moves a robot differently for one run's bars never goes over: the holds' grasps are as the process
+        #   panel shows them without a run, else as authored; the retreat stiff.
+        offsets = () if self._run is not None else tuple(
+            (hold, slide, roll) for hold, (slide, roll) in sorted(ctx.require("process").grasp_offsets.items()))
+        self._settings = replace(kept, grasp_offsets=offsets, retreat_compliant=False)
+        if await self._start(ctx, None) is None:
+            self._settings = kept
+            return
+        dropped = [what for what, gone in (("grasp offsets", kept.grasp_offsets != offsets),
+                                           ("Retreat compliant", kept.retreat_compliant)) if gone]
+        if dropped:
+            ctx.log_info(f"new run: {' and '.join(dropped)} not taken over from the last run")
+        self._say(f"new run {self._run.info.name}")
+        self._set_current(ctx, self._loaded.process.schedule[0])
 
     async def _continue(self, ctx: PluginContext, run: Run) -> None:
         """Write on in an offered run made on these files, or carry another export's run into a new one; then go on."""

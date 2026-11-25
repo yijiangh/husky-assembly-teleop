@@ -194,10 +194,11 @@ class BasePlannerPanel(PlannerPanel):
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
     def _choose_robot(self, serial: str) -> None:
-        """Plan for another robot. The old plan no longer applies."""
+        """Plan for another robot. The old plan and target, the other robot's, no longer apply."""
         self._used.touch()
         if serial != self.serial:
             self.serial = serial
+            self._has_target = False
             self._clear_plan()
 
     def _choose_algorithm(self, label: str) -> None:

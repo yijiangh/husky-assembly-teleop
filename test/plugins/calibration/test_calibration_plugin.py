@@ -1467,3 +1467,31 @@ def test_picking_another_waypoint_in_sweeps_shows_the_ghost_again(server, tmp_pa
     assert ghost.joints is not None
     assert np.allclose([ghost.joints[name] for name in named(ARM, np.zeros(6))],
                        plugin.cal.run.sweeps.sweeps[0].waypoints()[2])
+
+
+def test_another_arm_starts_with_auto_off_and_clearance_on(server, tmp_path, monkeypatch):
+    """Both were set for the arm before; another run of the same arm keeps them."""
+    plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
+    procedure, run = plugin.cal.procedure, plugin.cal.run
+    procedure.auto, procedure.clearance.value = True, False
+    plugin.switch_run(ctx, run)
+    assert procedure.auto and not procedure.clearance.value
+    plugin.cal.run = SimpleNamespace(serial="a200-0806", arm="left_ur_arm")
+    plugin.switch_run(ctx, run)
+    assert not procedure.auto and procedure.clearance.value
+    plugin.draw(ctx)
+    assert not plugin.panel._auto.value
+
+
+def test_a_tick_of_driving_does_not_revive_expired_marker_errors(server, tmp_path, monkeypatch):
+    """Measured long ago: the first tick driven starts from zero, so the precondition waits for a whole drive."""
+    plugin, ctx, _ = make_plugin(server, tmp_path, monkeypatch)
+    measure_markers(plugin, ctx)
+    run, step = plugin.cal.run, plugin.steps[1]
+    run.robot.base.state.marker_error = plugin.cal.tool.marker_error = 1e-4
+    ctx.wall += PRECONDITION_HOLDS + 60
+    step._note_marker_errors(ctx)
+    assert run.drive_seconds == pytest.approx(ctx.config.tick_period) and run.marker_expired(ctx.wall)
+    ctx.wall += 1.0
+    step._note_marker_errors(ctx)
+    assert run.drive_seconds == pytest.approx(2 * ctx.config.tick_period), "then it counts on"

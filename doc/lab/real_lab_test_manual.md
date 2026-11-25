@@ -152,7 +152,7 @@ Something wrong at any point: Part 8.
 | **tool0** | the end of the arm (its flange), where the tool or gripper sits |
 | **servo** | after a transfer, an approach or a ground bar's insert: small corrections from mocap until the flanges are within 0.2 mm of their targets; for B20 (**Servo by bar**) until the bar's mocap fit is within 0.5 mm / 0.1° of its design pose |
 | **controllers** | `scaled_joint_trajectory_controller` (**Joint**: stiff, follows joints; the normal one) or `cartesian_compliance_controller` (**Cart**: gives way to forces; only for an insert's last millimetres, a retreat's first ones and the handoff) |
-| **split** | those millimetres under the compliance controller (`Insert split mm`, 5) |
+| **split** | those millimetres under the compliance controller (`Insert split mm`, 12) |
 | **transfer workaround** | the process panel's box: Cindy's transfer runs as a free move with empty tools to the insert start, where you place the bar by hand (this export has no loading pose) |
 | **ground bar / one-mate / two-mate** | B20 stands on ground joints: rigid insert, no tighten, then the operator fixes the foundation. B21 mates on its left joint only, B22 on both |
 | **ghost** | a see-through robot in the 3D view: blue where the selected movement has the robot (after Live IK or a plan, on the live base) and at the base planner's target, green along a plan |
@@ -776,13 +776,13 @@ DONE (the current action's `… done` and `Reopen`) and SETTINGS.
 | setting | at start |
 |---|---|
 | `Ignore built bars`, `Visual diagnosis` | unticked |
-| `Insert split mm` | *5* |
+| `Insert split mm` | *12* |
 | `Spiral` | unticked; greyed on a ground bar's action, live on any other bar's |
 | `Spiral s`, `Spiral turns` | *20*, *4* |
 | `Cancel bar weight` | *on* |
 | `Insert push N` | *4* |
 | `Stiffness across`, `Stiffness along` | *1000*, *500* |
-| `Grasp controller`, `Grasp stiffness` | *compliance*, *500* (joint: the arm holds where it stands and the close pulls the frame; the stiffness greyed) |
+| `Grasp controller`, `Grasp stiffness` | *compliance*, *1500* (joint: the arm holds where it stands and the close pulls the frame; the stiffness greyed) |
 | `Servo by bar` | ticked on a ground bar's action (*B20_J*, *B34_J*, *B46_J*); greyed and unticked on any other, which always servos on tool0 |
 | `Retreat live axis` | ticked |
 | `Retreat compliant`, `Dry run (every check, nothing sent)` | unticked |

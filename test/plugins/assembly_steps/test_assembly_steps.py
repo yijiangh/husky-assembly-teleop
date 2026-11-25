@@ -1281,3 +1281,47 @@ def test_a_plan_given_back_is_checked_for_staleness_first():
 
     asyncio.run(scenario())
     assert lab.plugin.plan_state == "stale" and "base moved 3.0 mm" in lab.plugin._message
+
+
+def test_a_new_run_on_the_same_step_starts_it_clean():
+    """Parts done in one run are to do again in the next, the step kept; a run's first record changes nothing."""
+    lab = Steps(("B20_J", 3))
+    parts = len(lab.plugin.parts())
+    lab.plugin._done = {3}
+    lab.run.view.folder = "runs/1"
+    lab.update()
+    assert len(lab.plugin.parts()) == parts - 1, "from no folder to one is the same run"
+    lab.plugin.set_traj_time(40.0)
+    lab.run.view.folder = "runs/2"
+    lab.update()
+    assert len(lab.plugin.parts()) == parts and lab.plugin.traj_time == 10.0
+
+
+def test_a_step_starts_with_ignore_built_bars_off_and_clearance_on_for_another_robot():
+    """Cindy's next step: the box off, Clearance as set; Alice's step: Clearance ticked again."""
+    lab = Steps(("B21_J", 3))
+    lab.plugin.ignore_built, lab.plugin.clearance.value = True, False
+    lab.run.view.current = ("B21_J", 4)
+    lab.update()
+    assert not lab.plugin.ignore_built and not lab.plugin.clearance.value
+    lab.run.view.current = ("B21_H", 0)
+    lab.update()
+    assert lab.plugin.serial == "a200-0804" and lab.plugin.clearance.value
+
+
+def test_an_insert_retried_ends_where_the_first_try_was_to_end(monkeypatch):
+    """The arms stand part way in: the goal is from where the first insert started, not the whole move on from here."""
+    insert = step(purged_process(), "B20_J_insert")
+    lab = Steps(("B20_J", insert.movement_index))
+    robot = lab.ctx.scene.snapshot.robots[robot_id("a200-0806")]
+    ends = insert.movement.target.robots["robots/cindy"].link_poses
+    start = {**robot.joints, "left_ur_arm_elbow_joint": robot.joints["left_ur_arm_elbow_joint"] + 0.05}
+    lab.executor.carried = Carried(lab.loaded, "B20_J", insert.movement_index, "a200-0806", lab.ctx.t, start)
+    asyncio.run(lab.plan())
+    goals = lab.planner.plans[-1].goal_poses
+    starts = step(lab.loaded, "B20_J_transfer").movement.target.robots["robots/cindy"].link_poses
+    first = flange_poses(replace(robot, joints=start), ends)
+    flange = "robots/cindy/left_ur_arm_tool0"
+    assert not np.allclose(first[flange].matrix(), flange_poses(robot, ends)[flange].matrix(), atol=1e-3)
+    assert np.allclose(goals[flange].matrix(), apply_authored_move(starts[flange].matrix(), ends[flange].matrix(),
+                                                                   first[flange].matrix()), atol=1e-9)

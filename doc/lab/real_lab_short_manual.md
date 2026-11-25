@@ -145,7 +145,7 @@ hover a chip to see why it is not. Belle's `mocap` chip may stay amber (1.2 mm m
    `robots differ` chip is expected.
 2. Leave **Transfer workaround** ticked: Cindy moves her empty tools to the insert start, where you place the bar by
    hand. Leave **Rhino obstacles** on `ghost`.
-3. Settings: leave the defaults (**Insert split mm** 5, **Servo by bar** on, **Dry run** off).
+3. Settings: leave the defaults (**Insert split mm** 12, **Servo by bar** on, **Dry run** off).
 4. Each base's `ctrl` chip must be green. If it is not, click Control › robot › Base › **Controller: Vel**: the follower only
    drives with it.
 5. At the start of a session: Load continues the run used last if it was made on these process files. If the run

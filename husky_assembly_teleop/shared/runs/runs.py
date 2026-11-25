@@ -97,7 +97,8 @@ class RunSettings:
 
     Attributes:
         insert_split_mm: The last part of an insert run compliant, millimetres (0 to 30); a retreat's compliant part
-            is as long, from its start.
+            is as long, from its start. Long enough to begin before the joint touches: inserts touched up to 8.6 mm
+            before their end (24 Nov 2026), and a partner bar off its design pose may stand nearer still.
         spiral: The insert's compliant part searches in a spiral.
         servo_by_bar: Servo a ground bar by its mocap fit instead of tool0; on by default. Other bars always
             servo on tool0 (`servo_plan`).
@@ -116,7 +117,8 @@ class RunSettings:
         insert_stiffness_along: Its stiffness along the tool (tool0 z, the insert's direction), N/m.
         grasp_controller: The arm's controller while a Robotiq closes on a bar another robot holds (GRASP_CONTROLLERS):
             compliant, it gives way to the bar; joint, it holds where it stands, so the close pulls the bar to it.
-        grasp_stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m (STIFFNESS_RANGE).
+        grasp_stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m (STIFFNESS_RANGE). Both grasp
+            settings may change while a close waits for Confirm, which then asks again.
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
         plan_max_iterations: Iterations per try of it (PLAN_ITERATIONS_RANGE).
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).
@@ -128,7 +130,7 @@ class RunSettings:
             (`ProcessContract.placement`); the identity: as authored. Fixed once an action is marked done.
     """
 
-    insert_split_mm: float = 5.0
+    insert_split_mm: float = 12.0
     spiral: bool = False
     servo_by_bar: bool = True
     retreat_compliant: bool = False
@@ -140,7 +142,7 @@ class RunSettings:
     insert_stiffness_across: float = 1000.0
     insert_stiffness_along: float = 500.0
     grasp_controller: str = GRASP_COMPLIANCE
-    grasp_stiffness: float = 500.0
+    grasp_stiffness: float = 1500.0
     plan_max_time: float = 120.0
     plan_max_iterations: int = 50
     plan_joint_resolution: float = 0.1

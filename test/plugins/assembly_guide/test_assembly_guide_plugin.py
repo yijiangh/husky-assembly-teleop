@@ -17,7 +17,8 @@ from robot_lab import FakeRun, RobotLab
 
 from husky_assembly_teleop.shared.process_scene.live_scene import SceneNotShown
 from husky_assembly_teleop.plugins.assembly_guide import plugin as guide_module
-from husky_assembly_teleop.plugins.assembly_guide.parts import DRIVE, HAND, MARK, MOVE, NOTHING_TO_MOVE, PARK
+from husky_assembly_teleop.plugins.assembly_guide.parts import DRIVE, HAND, INSERT, MARK, MOVE, NOTHING_TO_MOVE, \
+    PARK, RETREAT
 from husky_assembly_teleop.world.checks import INFO, WARN
 from husky_assembly_teleop.plugins.assembly_guide.plugin import AUTO, AUTO_PLAN_TRIES, GOD, OFF, PREPARE_ZERO, REDO, \
     AssemblyGuidePlugin, simulation_problem
@@ -28,7 +29,7 @@ from husky_assembly_teleop.shared.execution.force_sensors import zero_force_sens
 from husky_assembly_teleop.shared.execution.operator import Prompt
 from husky_assembly_teleop.shared.assembly_planning.movement import Routine
 from husky_assembly_teleop.shared.movement_exec_contract import BY_HAND_PART, DEFAULT_TRAJ_TIME, DONE as EXEC_DONE, \
-    ExecResult
+    MOTION_KINDS, ExecResult
 from husky_assembly_teleop.shared.assembly_planning.route_result import GoalCheck
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath
 from husky_assembly_teleop.shared.planner.plan import Plan
@@ -119,6 +120,10 @@ class Executor:
     def finished(self, loaded, action):
         """What was finished for `action`."""
         return frozenset(self.done.get(action, ()))
+
+    def zeroed(self, action):
+        """Whether a Zero force was made for `action`."""
+        return any(zero[2] == action for zero in self.zeroes)
 
     def request_forget(self, action, done=None):
         """Forget some or all of it."""
@@ -823,13 +828,13 @@ def test_an_approach_without_solutions_left_greys_next_and_a_cancel_asks_nothing
     lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True, solutions=2)
     asyncio.run(lab.ticks())
     part = next(each for each in lab.guide.parts if each.label == "B21_H_approach: approach")
-    lab.guide._ik_skip = (lab.guide.parts.index(part), lab.run.view.process, 2)
+    lab.guide._ik_skip = (part, 2)
     with pytest.raises(RuntimeError, match="no more solutions"):
         _approach(lab)
     assert lab.guide._choice.is_open and lab.guide._choice.buttons[NEXT_SOLUTION].disabled
     lab.guide.move_grasp()
     assert not lab.guide._choice.is_open and "Slide mm" in lab.guide._notes_html(lab.ctx, lab.ctx.now())
-    lab.guide._ik_skip = (None, None, 0)
+    lab.guide._ik_skip = (None, 0)
     lab.ctx.plugins["arm_planner"] = ArmPlanner(finds=True, refuses=1, ends="cancelled")
     with pytest.raises(RuntimeError, match="no path"):
         _approach(lab)
@@ -853,6 +858,56 @@ def test_motion_time_times_the_plan_waiting_for_go_again(monkeypatch):
     lab.guide.moving = part
     kind.show(lab.ctx, part)
     assert kind._time.disabled, "greyed while the move runs"
+
+
+def test_a_motion_time_never_carries_over_to_the_next_part(monkeypatch):
+    """A transfer slowed to 40 s: the insert, the retreat and the next transfer take their own default again."""
+    lab = Guide(monkeypatch, "B21_J_transfer")
+    assert DEFAULT_TRAJ_TIME[Routine.INSERT] == DEFAULT_TRAJ_TIME[Routine.RETREAT_LINEAR] == 5.0
+
+    async def walk():
+        await lab.ticks()
+        guide, parts = lab.guide, lab.guide.parts
+        for part in parts:
+            if any(plan.kind in MOTION_KINDS for plan in part.plans):
+                assert part.routine in DEFAULT_TRAJ_TIME, f"{part.label}: no default of its own"
+        transfer, insert, retreat = (next(each for each in parts if each.action == action and each.kind == kind)
+                                     for action, kind in (("B21_J", MOVE), ("B21_J", INSERT), ("B21_R", RETREAT)))
+        guide._show(lab.ctx, parts.index(transfer), select=False)
+        guide.set_traj_time(40.0)
+        await lab.ticks()
+        assert guide.traj_time == 40.0, "the operator's, kept while the part is shown"
+        guide._show(lab.ctx, parts.index(insert), select=False)
+        assert guide.traj_time == 5.0
+        guide._show(lab.ctx, parts.index(transfer), select=False)
+        assert guide.traj_time == 10.0
+        # * Next while the transfer runs, as after Go: its slider greyed there, the transfer's time kept to its end.
+        started, go_on = [], asyncio.Event()
+
+        async def run_part(_ctx, part, _index, _rehearse):
+            started.append((part, guide.traj_time))
+            await go_on.wait()
+
+        monkeypatch.setattr(guide, "_run_part", run_part)
+        guide.set_traj_time(40.0)
+        guide._start(lab.ctx, transfer)
+        await lab.ticks()
+        home = next(each for each in parts if each.action == "B21_R" and each.kind == MOVE)
+        for shown in (home, insert):
+            guide._show(lab.ctx, parts.index(shown), select=False)
+            await lab.ticks()
+            assert guide.traj_time == 40.0
+        guide.kinds[MOVE].show(lab.ctx, home)
+        assert guide.kinds[MOVE]._time.disabled and guide.kinds[MOVE]._time.value == 10.0
+        go_on.set()
+        await lab.ticks()
+        assert guide.owner is None and guide.traj_time == 5.0, "the insert, shown since, has its own again"
+        # * One waiting for Go is replaced by the part shown, with that part's time.
+        guide._start(lab.ctx, retreat)
+        await lab.ticks()
+        assert started == [(transfer, 40.0), (retreat, 5.0)]
+
+    asyncio.run(walk())
 
 
 def test_a_transfer_that_finds_no_path_plans_the_same_goal_again_in_auto_only(monkeypatch):
@@ -1866,5 +1921,115 @@ def test_a_first_zero_press_counts_only_for_the_part_and_robot_it_asked_about(mo
         hand = lab.guide.kinds[HAND]
         hand._press_zero(lab.ctx)
         assert hand._zero_press.key == f"zero {CINDY} {lab.guide.index} False"
+
+    asyncio.run(walk())
+
+
+def test_a_second_prepare_zero_for_the_action_asks_even_with_no_box_ticked(monkeypatch):
+    """The sensors zeroed once for the action (from either tab): Prepare only asks, the second press zeroes."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        guide, hand = lab.guide, lab.guide.kinds[HAND]
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms), "the first zero: one press"
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert hand.count[0] == 0 and all(len(arm._zero_ft.calls) == 1 for arm in arms), "the bar may be mounted by now"
+        assert "zeroed for this action already" in guide.refusal(lab.ctx.t).detail
+        assert guide._prepare.label.endswith("?")
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 2 for arm in arms)
+        lab.executor.zeroes[:] = [(CINDY, "assembly tab", "B20_J", "B20_J_place_bar", None)]
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 2 for arm in arms), "a zero from the Assembly tab counts too"
+
+    asyncio.run(walk())
+
+
+def test_a_part_starts_with_ignore_built_bars_off_its_own_goal_line_and_clearance_on_for_another_robot(monkeypatch):
+    """What was set for one part is gone at the next; Clearance stays as set until another robot's part."""
+    lab = Guide(monkeypatch, "B21_J_transfer")
+
+    async def walk():
+        await lab.ticks()
+        guide, parts = lab.guide, lab.guide.parts
+        transfer, insert = (next(each for each in parts if each.action == "B21_J" and each.kind == kind)
+                            for kind in (MOVE, INSERT))
+        approach = next(each for each in parts if each.label == "B21_H_approach: approach")
+        guide._show(lab.ctx, parts.index(transfer), select=False)
+        guide.ignore_built, guide.goal_text, guide.procedure.clearance.value = True, "goal: IK", False
+        await lab.ticks()
+        assert guide.ignore_built and guide.goal_text and guide._ignore.value, "kept while the part is shown"
+        guide._show(lab.ctx, parts.index(insert), select=False)
+        await lab.ticks()
+        assert not guide.ignore_built and not guide.goal_text and not guide._ignore.value
+        assert not guide.procedure.clearance.value, "the same robot"
+        guide._show(lab.ctx, parts.index(approach), select=False)
+        assert guide.procedure.clearance.value, "Alice's part"
+
+    asyncio.run(walk())
+
+
+def test_a_new_run_or_a_reopened_action_starts_its_parts_afresh(monkeypatch):
+    """Boxes ticked, how a part ended and the IK solution passed over are gone; another action's stay."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        guide, hand = lab.guide, lab.guide.kinds[HAND]
+        lab.run.view.folder = "runs/1"
+        await lab.ticks()
+
+        def leave() -> None:
+            """What a try leaves."""
+            hand.tick_all()
+            guide._outcomes[guide.index] = Check("failed", WARN, "it failed")
+            guide._ik_skip = (guide.part, 1)
+
+        leave()
+        assert hand.ticked and guide.ik_skip(guide.part) == 1
+        lab.run.view.folder = "runs/2"
+        await lab.ticks()
+        assert not hand.count[0] and not guide._outcomes and guide.ik_skip(guide.part) == 0
+        leave()
+        lab.run.view.statuses["B20_J"] = DONE
+        await lab.ticks()
+        lab.run.view.statuses["B20_J"] = "pending"
+        await lab.ticks()
+        assert not hand.count[0] and not guide._outcomes and guide.ik_skip(guide.part) == 0
+
+    asyncio.run(walk())
+
+
+def test_a_drive_flagged_by_a_part_that_then_ran_is_good_again(monkeypatch):
+    """The approach found no goal (the drive flagged), then ran, e.g. to another IK solution: the flag goes."""
+    lab = Guide(monkeypatch, "B21_H_approach")
+
+    async def walk():
+        await lab.ticks()
+        guide = lab.guide
+        part = next(each for each in guide.parts if each.label == "B21_H_approach: approach")
+        guide._show(lab.ctx, guide.parts.index(part), select=False)
+        assert "not good" in guide._flag_drive_before(part, "no goal")
+        drive, = guide._flagged
+        assert drive in guide.undone_before(lab.ctx, guide.index)
+
+        async def execute(_ctx, each, _rehearse):
+            lab.executor.done.setdefault(each.action, set()).update(each.done_keys)
+
+        monkeypatch.setattr(guide, "_execute", execute)
+        monkeypatch.setattr(guide, "at_end", lambda *_args: False)
+        guide._start(lab.ctx, part)
+        await lab.ticks()
+        assert not guide._flagged and guide.is_done(lab.ctx, guide.parts[drive], drive)
 
     asyncio.run(walk())

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import math
 import traceback
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping
 
 import viser
@@ -29,7 +30,7 @@ from ...robot_interface.robot_lease import NotLeased
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_BASE
-from ...shared.execution.force_sensors import ZERO_EVENT, zero_force_sensors, zero_refusal
+from ...shared.execution.force_sensors import zero_force_sensors, zero_refusal
 from ...shared.execution.moving import moving_reason
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
@@ -39,7 +40,7 @@ from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, 
                                               Carried, ExecRequest, ExecResult, serial_of)
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_window
 from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
-from ...shared.runs.finished import EXEC_EVENT, FORGET_EVENT, finished_moves
+from ...shared.runs.finished import EXEC_EVENT, FORGET_EVENT, ZERO_EVENT, finished_moves, zeroed_actions
 from .as_built import as_built_record
 from .panel import ExecPanel
 from .plots import ExecPlots
@@ -99,6 +100,8 @@ class MovementExecPlugin(HuskyPlugin):
         self._moved_at: dict[str, float] = {}
         #: Serial -> {at, reason} of its force sensors' last zero, for the as-built records of later requests.
         self._ft_zero: dict[str, dict] = {}
+        #: The run folder (None before its first record) and the actions zeroed for in it (`zeroed`).
+        self._zeroed: tuple[object, set[str]] = (None, set())
         #: What the last transfer's servo left for its insert's plan; the panel's servo line: the running servo's
         #: last reading, or how the last one ended, until the next request.
         self._carried: Carried | None = None
@@ -140,6 +143,18 @@ class MovementExecPlugin(HuskyPlugin):
             self._carried = None
         return self._carried
 
+    def zeroed(self, action: str) -> bool:
+        """Whether an operator's Zero force was made for `action` in this run (`MovementExecContract`)."""
+        return action in self._zeroed_here()
+
+    def _zeroed_here(self) -> set[str]:
+        """The actions zeroed for in the run there is; a run's folder appears with its first record."""
+        folder = self._ctx.require("assembly_run").view.folder
+        kept, actions = self._zeroed
+        if folder != kept:
+            self._zeroed = (folder, actions if kept is None else set())
+        return self._zeroed[1]
+
     def finished(self, loaded, action: str) -> frozenset[tuple[int, int]]:
         """(step primary, movement index) of `action` finished for real by any request on `loaded`."""
         kept = self._finished_moves.get(action)
@@ -159,6 +174,9 @@ class MovementExecPlugin(HuskyPlugin):
         if self._inserted is not None and self._inserted.action == action and (
                 done is None or (self._inserted.primary, self._inserted.index) in done):
             self._inserted = None  # * its insert is to do again: no servo after it until it ran again
+        if self._carried is not None and self._carried.action == action and (
+                done is None or any(index == SERVO_INDEX for _primary, index in done)):
+            self._carried = None  # * its servo is to do again
         kept = self._finished_moves.get(action)
         if kept is None:
             return
@@ -264,6 +282,9 @@ class MovementExecPlugin(HuskyPlugin):
         if refusal:
             self._zero_ended(ctx, f"Zero force refused: {refusal}", future)
             return future
+        # * Counted from the press on: a second press while it zeroes asks too.
+        if action is not None:
+            self._zeroed_here().add(action)
         ctx.spawn(f"zero force {short_serial(serial)}",
                   self._zero(ctx, serial, by, action, movement, bar_looked_clamped, future))
         return future
@@ -325,14 +346,18 @@ class MovementExecPlugin(HuskyPlugin):
                 self._last, self._last_failed = "", False
         key = (view.process, view.folder)
         if view.process is not None and view.folder is not None and key != self._replayed:
+            if self._replayed is not None:
+                self._carried = self._inserted = None  # * another run: what the last one left is not its own
             self._replayed = key
             ctx.spawn("read the finished movements back", self._replay(ctx, *key), survives_soft_stop=True)
 
     async def _replay(self, ctx: PluginContext, loaded, folder) -> None:
         """Add what the run's log says was finished to what this session finished (`finished_moves`)."""
         found = await ctx.run_in_thread(finished_moves, folder, ctx.log_warn)
+        zeroed = await ctx.run_in_thread(zeroed_actions, folder)
         if self._replayed != (loaded, folder):
             return
+        self._zeroed_here().update(zeroed)
         for action, keys in found.items():
             kept = self._finished_moves.get(action)
             if kept is None or kept[0] is not loaded or kept[1] != folder:
@@ -434,8 +459,10 @@ class MovementExecPlugin(HuskyPlugin):
                         # * The moment before anything moves; every later start is the end of the part before.
                         self._as_built(job, run, "start")
                         first = False
+                    started = None
                     if part.kind == INSERT_PART:
                         self._inserted = None  # * however this insert ends, an older one's end no longer holds
+                        started = ctx.scene.snapshot.robots.get(robot_id(request.serial))
                     if part.routine in TRANSFERS and part.kind in (MOTION_PART, SERVO_PART):
                         self._carried = None  # the transfer runs anew: its servo sets the carry again when due
                     if self._plots is not None and part.kind == SERVO_PART:
@@ -456,6 +483,10 @@ class MovementExecPlugin(HuskyPlugin):
                         # * However the servo ended: it moved the flanges, so the insert plans from where it left them.
                         if run.carry is not None:
                             self._carried = run.carry
+                        # * An insert that may have moved: the next try ends where this one was to end.
+                        if started is not None and self._carried is not None and self._carried.joints is None \
+                                and run.result not in (REFUSED, DRY_RUN):
+                            self._carried = replace(self._carried, joints=dict(started.joints))
                     self._record_part(job, run)
                     if run.end is not None:
                         end, base = run.end, run.base

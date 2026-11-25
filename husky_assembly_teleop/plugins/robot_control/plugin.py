@@ -38,7 +38,7 @@ from ...plugin_api.signals import force, torque
 from ...plugin_api.trace import Trace
 from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER, JOG_MAX_SPEED,
                                     MOVING_WITHIN, SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME,
-                                    ArmInterface, cartesian_move, joint_jog)
+                                    ArmInterface, SentWrench, cartesian_move, joint_jog)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.end_effectors import EndEffectorState, RobotiqState, ScaffoldingV3, ScaffoldingV3State
 from ...robot_interface.refusal import Refusal
@@ -203,6 +203,8 @@ class RobotControlPlugin(HuskyPlugin):
 
         #: Target force last sent to each arm, N; the controller keeps applying it.
         self._applied_force: dict[tuple[str, str], np.ndarray] = {}
+        #: The arms' wrench events listened to, detached at teardown.
+        self._listeners: list[tuple[Any, Any]] = []
 
         #: This tick's 3D marker poses and force-arrow segments per arm; None without the compliance controller.
         self._markers: dict[tuple[str, str], dict[str, tuple] | None] = {}
@@ -248,6 +250,9 @@ class RobotControlPlugin(HuskyPlugin):
                     for arm in robot.arms.values():
                         with parts.add_tab(arm.config.label, icon=viser.Icon.CRANE):
                             self._arms.append(self._build_arm(ctx, gui, serial, arm))
+                        listener = partial(self._wrench_sent, (serial, arm.config.name))
+                        arm.wrenches_sent.attach(listener)
+                        self._listeners.append((arm.wrenches_sent, listener))
         # * The phone's Control tab: a sub-tab per robot with its own speed slider and the same D-pad.
         #   Below it, a folder per arm: Open and Close, and free drive while held.
         with ctx.view.phone("Control", viser.Icon.DEVICE_GAMEPAD_2) as phone:
@@ -379,6 +384,8 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._bases:
             if widgets.serial in self._driving:
                 widgets.base.send_twist(0.0, 0.0)
+        for event, listener in self._listeners:
+            event.detach(listener)
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             jog = self._tool_jogging.get(key)
@@ -412,6 +419,11 @@ class RobotControlPlugin(HuskyPlugin):
         send = arm.clear_target_wrench if not np.any(force) else partial(arm.send_target_wrench, force)
         if self._leased(ctx, key, send):
             self._applied_force[key] = force
+
+    def _wrench_sent(self, key: tuple[str, str], sent: SentWrench) -> None:
+        """Forget the force applied once a zero wrench went out, whoever sent it (e.g. a controller switch)."""
+        if not np.any(sent.force) and not np.any(sent.torque):
+            self._applied_force.pop(key, None)
 
     def _leased(self, ctx: PluginContext, key: tuple[str, str], command: Callable[[], Any]) -> Any:
         """Run `command` under this plugin's lease of robot `key[0]`, leasing it first if free.
