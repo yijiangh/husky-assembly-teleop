@@ -1051,7 +1051,7 @@ class AssemblyGuidePlugin(HuskyPlugin):
                                                                           else None)
         following = self.parts[after] if after is not None else None
         if part.kind == MARK and following is not None:
-            # ! The run moves its current step on a mark (to its first pending action): select the next part at once,
+            # ! The run moves its current step on a mark (to the next pending action): select the next part at once,
             #   or the guide takes that move for the operator's pick.
             self._select(ctx, following)
         if self.mode != OFF:

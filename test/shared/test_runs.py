@@ -118,6 +118,12 @@ def test_mark_done_records_ends_and_beliefs(process, robots):
     assert run.progress.robots[CINDY] == replace(record(1.0), after_action="B1_J_joint")
     assert run.progress.robots[ALICE] == replace(record(3.0, ASSUMED), after_action="B1_H_hold")
     assert first_pending(run.progress, process.schedule) == "B1_R_release"
+    # * From an action on: the next pending one after it, round to the start.
+    assert first_pending(run.progress, process.schedule, "B1_H_hold") == "B1_R_release"
+    assert first_pending(run.progress, process.schedule, "B1_J_joint") == "B1_R_release"
+    assert first_pending(run.progress, process.schedule, "B2_J_joint") == "B2_J_joint"
+    wrapped = mark_done(run, "B1_HR_hold_release", {}, True, now=NOW)
+    assert first_pending(wrapped.progress, process.schedule, "B1_HR_hold_release") == "B1_R_release"
     with pytest.raises(RunError):
         mark_done(run, "B1_J_joint", {}, False)
 

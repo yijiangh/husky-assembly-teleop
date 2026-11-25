@@ -2,8 +2,9 @@
 Remember how far an assembly got: which actions are done, where each robot was left, and the run's settings.
 
 On a process load it continues the assembly run used last when it was made on exactly these process files, else the
-operator chooses (`shared/runs/runs.py`); then the first pending action becomes current, and its first step is
-selected once the action's robot is live. Other plugins read and change it through `AssemblyRunContract`.
+operator chooses (`shared/runs/runs.py`); then the run's current action, or the next pending one after it, becomes
+current, and its first step is selected once the action's robot is live. Mark done moves on to the next pending
+one. Other plugins read and change it through `AssemblyRunContract`.
 
 Its part of the Assembly tab is Mark done and Reopen, the settings and the run. The run follows the process panel: a
 movement picked there becomes current, except while movement_exec has a robot's lease for a step; each action's mark
@@ -545,11 +546,11 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             self._go_task = None
 
     def _resume_point(self) -> tuple[str, int | None] | None:
-        """Where to carry on: the saved current action if still pending, else the first pending; None if all done."""
+        """Where to carry on: the saved current action, else the next pending one after it; None if all are done."""
         saved = self._run.progress.current if self._run is not None else None
         if saved is not None and self.view.statuses.get(saved[0]) == PENDING:
             return saved
-        action_id = first_pending(self._progress(), self._loaded.process.schedule)
+        action_id = first_pending(self._progress(), self._loaded.process.schedule, saved[0] if saved else None)
         return (action_id, None) if action_id is not None else None
 
     def _adopt(self, ctx: PluginContext, run: Run) -> None:

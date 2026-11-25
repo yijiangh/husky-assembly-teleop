@@ -159,7 +159,7 @@ class RunWrites:
             self._apply_mark(ctx, action_id, ends, assumed)
 
     def _apply_mark(self, ctx: PluginContext, action_id: str, ends: Mapping[str, RobotRecord], assumed: bool) -> None:
-        """Mark an action done, make the first pending one current, then write both."""
+        """Mark an action done, make the next pending one after it current, then write both."""
         if self._refused("Mark done", self._step_running(ctx)):
             return  # ? a step started while the run was being started
         try:
@@ -168,7 +168,7 @@ class RunWrites:
             self._refused("Mark done", str(refused))
             return
         self._run = run
-        following = first_pending(run.progress, self._loaded.process.schedule)
+        following = first_pending(run.progress, self._loaded.process.schedule, action_id)
         if following is not None:
             self._set_current(ctx, following)
         else:
