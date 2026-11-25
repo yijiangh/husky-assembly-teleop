@@ -165,7 +165,7 @@ class Arrows:
     Attributes:
         segments: (2, 3) world points per segment, metres.
         colors: An rgb colour per segment.
-        labels: (text, world position) per label.
+        labels: (text, world position) per label; always 6 for a bar: its 3 gaps, then its turns about x, y, z.
     """
 
     segments: list[np.ndarray]
@@ -233,10 +233,9 @@ def deviation_arrows(planned: np.ndarray, fitted: np.ndarray, length: float, mag
     for i in range(3):
         add(np.array([origin, origin + axes[i] * AXIS_LENGTH]), PLANNED_AXIS_COLOR)
         add(np.array([fitted_origin, fitted_origin + fitted_axes[i] * AXIS_LENGTH]), AXIS_COLORS[i])
-        # * + 0.0: no "-0.00°". With a name (every bar drawn) a turn under 0.01° gets no label.
-        if not name or abs(turn[i]) >= 0.01:
-            out.labels.append((f"about {'XYZ'[i]}: {round(float(turn[i]), 2) + 0.0:+.2f}°",
-                               fitted_origin + fitted_axes[i] * AXIS_LENGTH))
+        # * + 0.0: no "-0.00°".
+        out.labels.append((f"about {'XYZ'[i]}: {round(float(turn[i]), 2) + 0.0:+.2f}°",
+                           fitted_origin + fitted_axes[i] * AXIS_LENGTH))
         # At most a near full turn, however large the magnified angle; none when too small to see.
         sweep = float(np.clip(magnify * np.radians(turn[i]), -5.8, 5.8))
         if abs(sweep) <= 0.05:
@@ -325,10 +324,10 @@ class MocapBarsPlugin(HuskyPlugin):
         self._now = 0.0
         #: The settings' sliders (None before setup: the module's defaults hold).
         self._radius_mm = self._fit_period = self._marker_age = self._hint_age = self._search_retry = None
-        #: What the arrows last drew (bars, poses, mode, magnify), when, and their label nodes, reused.
+        #: What the arrows last drew (bars, poses, mode, magnify), when, and their label nodes by (bar, label number).
         self._arrows_drawn: tuple | None = None
         self._arrows_drawn_at = -np.inf
-        self._arrow_labels: list = []
+        self._arrow_labels: dict[tuple[str, int], viser.LabelHandle] = {}
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the panel and the marker nodes, and find the Drive folder for takes.
@@ -482,7 +481,9 @@ class MocapBarsPlugin(HuskyPlugin):
         # * A summary, a row per marker, the strays, a row per plate and per spacing, the deviation.
         self._stats_rows = 3 + markers + max(2 * plates - 1, 0)
         self._bar.options = list(self._bars) or [NO_BAR]
-        self._bar_id = next(iter(self._bars), None)
+        # * The bar chosen stays chosen: placing the build or moving a grasp makes the process again.
+        if self._bar_id not in self._bars:
+            self._bar_id = next(iter(self._bars), None)
         self._bar.value = self._bar_id or NO_BAR
         self._drawn = None
         if self._bars:
@@ -496,6 +497,7 @@ class MocapBarsPlugin(HuskyPlugin):
             self._message = "no marker cloud from the relay yet"
             return
         self._refit(state, self._cloud, self._now, None, full_search=True)
+        state.deviation = _deviation(state)
         self._log_report(ctx, self._bar_id, state)
 
     def _log_report(self, ctx: PluginContext, bar: str, state: _Followed) -> None:
@@ -522,7 +524,7 @@ class MocapBarsPlugin(HuskyPlugin):
         state = self._bars[bar_id]
         experiment = folder_name(self._experiment.value, "take")
         self._message = f"recording {bar_id} for {seconds:g} s"
-        with ctx.record(*self._signals(state)) as take:
+        with ctx.record(*self._signals(bar_id)) as take:
             await ctx.sleep(seconds)
         process: ProcessContract = ctx.require("process")
         selection = process.selection
@@ -548,31 +550,39 @@ class MocapBarsPlugin(HuskyPlugin):
         self._message = f"saved {len(take)} samples ({fitted} fitted) to {path}"
         ctx.log_info(self._message)
 
-    def _signals(self, state: _Followed) -> list[Signal]:
-        """What a take records each tick: the fit, its quality, the target and the deviation from it."""
-        model = state.layout.points
+    def _signals(self, bar_id: str) -> list[Signal]:
+        """What a take records each tick: the fit, its quality, the target and the deviation from it.
+
+        ! The bar is looked up each tick: while a take runs the process may be made again, and its bars with it.
+        """
+        started = self._bars[bar_id]
+        model = started.layout.points
+
+        def state() -> _Followed:
+            return self._bars.get(bar_id, started)
 
         def fit() -> BarFit | None:
-            return state.fit if state.fit is not None and state.fit.ok else None
+            return state().fit if state().fit is not None and state().fit.ok else None
 
         def planned_deviation() -> PoseDeviation | None:
-            return state.deviation
+            return state().deviation
 
         return [
-            Signal("fit_position", lambda: state.pose.position if state.pose else None, ("x", "y", "z"), "m"),
-            Signal("fit_orientation", lambda: state.pose.orientation if state.pose else None,
+            Signal("fit_position", lambda: state().pose.position if state().pose else None, ("x", "y", "z"), "m"),
+            Signal("fit_orientation", lambda: state().pose.orientation if state().pose else None,
                    ("qx", "qy", "qz", "qw")),
             Signal("fit_rms", lambda: fit().rms_m if fit() else None, (), "m"),
             Signal("fit_max", lambda: fit().max_residual_m if fit() else None, (), "m"),
             Signal("fit_count", lambda: fit().n_matched if fit() else None),
-            Signal("target_position", lambda: state.target.position if state.target else None, ("x", "y", "z"), "m"),
-            Signal("target_orientation", lambda: state.target.orientation if state.target else None,
+            Signal("target_position", lambda: state().target.position if state().target else None, ("x", "y", "z"),
+                   "m"),
+            Signal("target_orientation", lambda: state().target.orientation if state().target else None,
                    ("qx", "qy", "qz", "qw")),
             Signal("deviation", lambda: (planned_deviation().across_mm / 1e3, planned_deviation().along_mm / 1e3)
                    if planned_deviation() else None, ("across", "along"), "m"),
             Signal("tilt", lambda: np.radians(planned_deviation().tilt_deg) if planned_deviation() else None, (),
                    "rad"),
-            Signal("matched_markers", lambda: self._matched(state), tuple(
+            Signal("matched_markers", lambda: self._matched(state()), tuple(
                 f"{index}.{axis}" for index in range(len(model)) for axis in "xyz"), "m"),
         ]
 
@@ -970,25 +980,28 @@ class MocapBarsPlugin(HuskyPlugin):
                 return
         self._arrows_drawn, self._arrows_drawn_at = key, now
         arrows = Arrows([], [], [])
+        # ! Each label keeps its own node: a node passed on to another label flashes its text at the wrong place.
+        labels: dict[tuple[str, int], tuple[str, np.ndarray]] = {}
         for bar, pose, planned in shown:
             one = deviation_arrows(planned.matrix(), pose.matrix(), self._bars[bar].layout.length, magnify,
                                    short(bar) if mode == ARROW_MODES[2] else "")
             arrows.segments += one.segments
             arrows.colors += one.colors
-            arrows.labels += one.labels
+            labels.update({(bar, number): label for number, label in enumerate(one.labels)})
         self._arrow_lines.visible = bool(arrows.segments)
         if arrows.segments:
             self._arrow_lines.points = np.array(arrows.segments, dtype=np.float32)
             self._arrow_lines.colors = np.repeat(np.array(arrows.colors, dtype=np.uint8)[:, None], 2, axis=1)
-        for index, (text, position) in enumerate(arrows.labels):
+        for slot, (text, position) in labels.items():
             where = tuple(float(v) for v in position)
-            if index == len(self._arrow_labels):
-                self._arrow_labels.append(self._scene.add_label(f"{self._root}/arrow_labels/{index}", text=text,
-                                                                position=where))
-            label = self._arrow_labels[index]
+            if slot not in self._arrow_labels:
+                self._arrow_labels[slot] = self._scene.add_label(
+                    f"{self._root}/arrow_labels/{short(slot[0])}_{slot[1]}", text=text, position=where)
+            label = self._arrow_labels[slot]
             label.text, label.position, label.visible = text, where, True
-        for label in self._arrow_labels[len(arrows.labels):]:
-            label.visible = False
+        for slot, label in self._arrow_labels.items():
+            if slot not in labels:
+                label.visible = False
 
 
 def _deviation(state: _Followed) -> PoseDeviation | None:

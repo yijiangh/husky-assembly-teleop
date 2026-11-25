@@ -435,10 +435,8 @@ def test_deviation_arrows_point_from_planned_to_fitted_magnified_and_label_true_
     arrows = deviation_arrows(planned, fitted, 1.0, magnify=20, name="B20")
     texts = [text for text, _ in arrows.labels]
     assert texts[:3] == ["2.00 mm", "B20 2.00 mm", "2.00 mm"]
-    # * Named (every bar drawn): only the turns of 0.01° or more get a label; unnamed, every axis.
-    assert texts[3:] == ["about Z: +1.00°"]
-    assert [text for text, _ in deviation_arrows(planned, fitted, 1.0).labels][3:] == \
-        ["about X: +0.00°", "about Y: +0.00°", "about Z: +1.00°"]
+    # * Every axis, however small its turn: a label never takes another's place.
+    assert texts[3:] == ["about X: +0.00°", "about Y: +0.00°", "about Z: +1.00°"]
     # * First a shaft and two head strokes per gap, green (2 mm is fine); the shaft is 20 times the 2 mm.
     gaps = arrows.segments[:9]
     assert arrows.colors[:9] == [rgb(OK)] * 9 and np.isclose(np.linalg.norm(gaps[0][1] - gaps[0][0]), 0.04)
@@ -463,20 +461,28 @@ def test_arrows_show_the_chosen_bar_or_every_bar_or_none():
         plugin.update(ctx)
     plugin.draw(ctx)
     assert plugin._arrows.value == ARROW_MODES[1] and plugin._arrow_lines.visible
-    shown = [label.text for label in plugin._arrow_labels if label.visible]
+    shown = [label.text for label in plugin._arrow_labels.values() if label.visible]
     # * Slid 30 mm along the bar: every gap reads 30 mm, give or take the noise.
     assert all(text.startswith("30.0") for text in shown[:3]) and len(shown) == 6
     # * 30 mm is off: red, as the frame check's ends.
     assert tuple(plugin._arrow_lines.colors[0, 0]) == rgb(FAIL)
     plugin._arrows.value = ARROW_MODES[2]
     plugin.draw(ctx)
-    shown = [label.text for label in plugin._arrow_labels if label.visible]
+    shown = [label.text for label in plugin._arrow_labels.values() if label.visible]
     named = [text.split()[0] for text in shown if text.startswith("B")]
-    # * Three gaps a bar, and only the turns of 0.01° or more (the 2° roll about z; x and y under it).
-    assert named == ["B20", "B21", "B34", "B35"] and 3 * len(BARS) < len(shown) <= 6 * len(BARS)
+    # * Three gaps and three turns a bar.
+    assert named == ["B20", "B21", "B34", "B35"] and len(shown) == 6 * len(BARS)
+    # * A bar no longer fitted hides its own labels; the other bars' keep their nodes and texts.
+    before = {key: label.text for key, label in plugin._arrow_labels.items() if key[0] != BAR}
+    plugin._bars[BAR].pose = None
+    ctx.t += 1.0
+    for bar in BARS[1:]:
+        plugin._bars[bar].measured_at = ctx.t
+    plugin.draw(ctx)
+    assert {key: label.text for key, label in plugin._arrow_labels.items() if label.visible} == before
     plugin._arrows.value = ARROW_MODES[0]
     plugin.draw(ctx)
-    assert not plugin._arrow_lines.visible and not any(label.visible for label in plugin._arrow_labels)
+    assert not plugin._arrow_lines.visible and not any(label.visible for label in plugin._arrow_labels.values())
 
 
 def test_the_fit_settings_change_the_search_radius_and_timings():
@@ -535,3 +541,30 @@ def test_choosing_another_bar_drops_the_plate_check():
     plugin._choose(others[0])
     plugin._choose(BAR)
     assert plugin._checked() is None
+
+
+def test_the_chosen_bar_and_a_take_outlive_the_process_made_again():
+    """Placing the build or moving a grasp makes the process again: the bar stays chosen, a take reads the new fit."""
+    plugin, ctx = bench()
+    placed(ctx, BAR)
+    other = next(bar for bar in reversed(list(plugin._bars)) if bar != next(iter(plugin._bars)))
+    plugin._choose(other)
+    position = plugin._signals(other)[0]
+    plugin._follow_all(ctx, purged_process().process)
+    assert plugin._bar_id == other == plugin._bar.value
+    plugin._bars[other].pose = Pose((1.0, 2.0, 3.0))
+    assert position.read() == (1.0, 2.0, 3.0)
+
+
+def test_measure_logs_the_deviation_of_the_fit_it_made():
+    """The report pairs the new fit with its own deviation, not the one before."""
+    plugin, ctx = bench()
+    placed(ctx, BAR)
+    plugin.update(ctx)
+    stream(ctx, bar_markers(BAR))
+    plugin._choose(BAR)
+    stale = plugin._bars[BAR].deviation = object()
+    reported = []
+    plugin._log_report = lambda _ctx, _bar, state: reported.append(state.deviation)
+    plugin._measure_and_log(ctx)
+    assert reported and reported[0] is not stale
