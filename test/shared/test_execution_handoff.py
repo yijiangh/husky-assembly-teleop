@@ -192,12 +192,14 @@ def test_a_cancel_stops_the_fingers_and_holds_the_arm_without_switching():
 
 @pytest.mark.safety
 @pytest.mark.parametrize("grasp", [GraspSettings(), GraspSettings(JOINT_GRASP)])
-@pytest.mark.parametrize("fingers", ["closed", "silent", "reactivating"])
+@pytest.mark.parametrize("fingers", ["closed", "told to close", "silent", "reactivating"])
 def test_fingers_not_known_open_are_refused_before_the_zero(fingers, grasp):
     """A bar may be in them: REFUSED, no zero, no switch, no goal, under either grasp controller."""
     lab = Lab()
     if fingers == "closed":
         lab.gripper.state.position = 0.667
+    elif fingers == "told to close":
+        lab.gripper.state.commanded_position = 0.8
     elif fingers == "silent":
         lab.drivers[1].reports = False
         lab.gripper.state.last_update_time = lab.ctx.t - 1.5

@@ -125,8 +125,9 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._press = SecondPress(seconds=None)
         #: When the current followed from the process panel was last changed without writing it; None: written.
         self._unsaved_at: float | None = None
-        #: What the robots showed at the last update: a stop or a gripper failure since is recorded.
+        #: What the robots showed at the last update (a stop or a gripper failure since is recorded), in which run.
         self._faults = FaultWatch()
+        self._faults_of: Path | None = None
         #: The view's revision whose marks the process panel was last given.
         self._marks_revision = -1
         #: One line of feedback, whether it is a failure, and the last write that failed.
@@ -392,8 +393,10 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
 
     def _record_faults(self, ctx: PluginContext) -> None:
         """Record the stops and gripper failures since the last update, at the current step, once the run has begun."""
-        if self._run is None:
-            self._faults = FaultWatch()  # * so a run begun or continued says which robots are stopped already
+        folder = None if self._run is None else self._run.folder
+        if folder != self._faults_of:  # * so every run says which robots are stopped as it begins or continues
+            self._faults, self._faults_of = FaultWatch(), folder
+        if folder is None:
             return
         for event, data in self._faults.changes(ctx.world.robots):
             action, movement = current_ids(self.view)

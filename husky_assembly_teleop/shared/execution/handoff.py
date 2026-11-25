@@ -296,6 +296,9 @@ def fingers_not_open(gripper: RobotiqGripper, now: float) -> str:
     if state.position > ROBOTIQ_OPEN + REACHED_TOLERANCE:
         return (f"{gripper.namespace}: the fingers are at {state.position:.3f} rad, not open (a bar may be in them): "
                 f"open them first")
+    # ? A real close can be answered before the fingers move: "stalled" at 0.40 rad, 0.69 rad later (Belle, 10 Nov).
+    if state.commanded_position is not None and state.commanded_position > ROBOTIQ_OPEN + REACHED_TOLERANCE:
+        return f"{gripper.namespace}: the fingers were last told to close (a bar may be in them): open them first"
     return ""
 
 
