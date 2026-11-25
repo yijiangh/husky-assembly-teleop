@@ -24,7 +24,7 @@ from ...shared.bars.layouts import bar_layouts
 from ...shared.bars.pose import pose_deviation
 from ...shared.execution.servo import flange_poses, tool0_errors, wrench_magnitudes
 from ...shared.execution.spiral import spiral_fits
-from ...shared.movement_exec_contract import DONE, INSERT_PART, SERVO_INDEX, SERVO_PART
+from ...shared.movement_exec_contract import DONE, HANDOFF_PART, INSERT_PART, SERVO_INDEX, SERVO_PART
 from ...shared.runs.runs import stamp
 
 #: The transfer's two routines: the workaround (a free move, the bar mounted after) and the held one.
@@ -191,6 +191,8 @@ def _options(request: ExecRequest | None, run: PartRun | None, view: RunView, dr
             insert_mode = "rigid"
         else:
             insert_mode = "compliant-two-mate" if len(plan.get("mating") or part.tools) >= 2 else "compliant-one-mate"
+    # * A close's own grasp settings: the run's may change once it started.
+    grasp = (run.command or {}) if part is not None and part.kind == HANDOFF_PART else {}
     servo = run.servo if run is not None else None
     servo_plan = run.servo_plan if run is not None else None
     return {
@@ -210,5 +212,6 @@ def _options(request: ExecRequest | None, run: PartRun | None, view: RunView, dr
         "insert_split_mm": settings.insert_split_mm, "spiral_seconds": settings.spiral_seconds,
         "spiral_turns": settings.spiral_turns, "insert_cancel_weight": settings.insert_cancel_weight,
         "insert_push_n": settings.insert_push_n, "insert_stiffness_across": settings.insert_stiffness_across,
-        "insert_stiffness_along": settings.insert_stiffness_along, "grasp_controller": settings.grasp_controller,
-        "grasp_stiffness": settings.grasp_stiffness}
+        "insert_stiffness_along": settings.insert_stiffness_along,
+        "grasp_controller": grasp.get("controller", settings.grasp_controller),
+        "grasp_stiffness": grasp.get("stiffness", settings.grasp_stiffness)}

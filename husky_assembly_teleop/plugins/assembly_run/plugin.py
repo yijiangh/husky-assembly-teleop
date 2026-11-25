@@ -44,7 +44,7 @@ from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, 
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
 from ...ui.second_press import SecondPress
 from .panel import PanelStatus, RunPanel
-from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
+from .writes import (AGAIN_MARK, AGAIN_NEW_RUN, GRASP_SETTINGS, NO_PROCESS, NOT_OPENED, OPEN, OPENING, SETTING_TYPES,
                      RunWrites)
 
 if TYPE_CHECKING:
@@ -239,7 +239,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
     def request_settings(self, **changes: Any) -> None:
         """Change run settings (`RunSettings` fields); saved with the run, which this starts if there is none."""
         refusal = (self._settings_problem(changes) or self._not_open() or self._offered_first()
-                   or self._step_running(self._ctx))
+                   or ("" if GRASP_SETTINGS.issuperset(changes) else self._step_running(self._ctx)))
         if refusal:
             self._settings_refused += 1
             self._refused("Settings", refusal)

@@ -847,6 +847,11 @@ def test_a_robot_leased_for_a_step_refuses_selecting_reopening_and_settings(tmp_
         refused = plugin._settings_refused
         plugin.request_settings(spiral=True)
         assert "Settings refused: 0804 is leased" in plugin._message and plugin._settings_refused == refused + 1
+        # * The grasp settings are taken: a close waiting for Confirm asks again under them.
+        plugin.request_settings(grasp_stiffness=2000.0)
+        plugin.request_settings(grasp_stiffness=2000.0, spiral=True)
+        assert plugin._settings_refused == refused + 2 and plugin.view.settings == RunSettings(grasp_stiffness=2000.0)
+        await settle(plugin)
         return plugin, process, current, selected
 
     plugin, process, current, selected = asyncio.run(scenario())

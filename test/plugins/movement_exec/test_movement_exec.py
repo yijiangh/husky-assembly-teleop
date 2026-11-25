@@ -1652,6 +1652,46 @@ def test_b21_hs_close_sets_the_runs_grasp_stiffness():
     assert arm.stiffness_service.sets == [[2000.0] * 3, [500.0] * 3]
 
 
+@pytest.mark.safety
+def test_b21_hs_close_asks_again_once_the_grasp_stiffness_changed():
+    """A stiffness changed while the close waits: asked again once it settled, and only that question's value is set.
+
+    A Confirm for the old question while the slider still moves closes nothing; a Cancel then still cancels.
+    """
+    lab = Lab(current=("B21_H", 3))
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+
+    async def opened(text: str):
+        while lab.plugin.prompt is None or text not in lab.plugin.prompt.text:
+            await asyncio.sleep(0)
+        return lab.plugin.prompt
+
+    async def scenario(ok: bool):
+        lab.run.view.settings = RunSettings(grasp_stiffness=1500.0)
+        future = lab.plugin.request_execute(lab.request("B21_H_close", serial="a200-0804", route=None))
+        first = await opened("COMPLIANT at 1500 N/m")
+        while lab.ctx.t - first.opened_at < 0.6:
+            await asyncio.sleep(0)
+        lab.run.view.settings = RunSettings(grasp_stiffness=2000.0)
+        (lab.plugin.request_confirm if ok else lab.plugin.request_cancel)()
+        if not ok:
+            return await future
+        await opened("COMPLIANT at 2000 N/m")
+        assert arm.end_effector._action.goals == []
+        lab.run.view.settings = RunSettings(grasp_stiffness=2500.0)
+        await opened("COMPLIANT at 2500 N/m")
+        await answer(lab)
+        return await future
+
+    assert run_guarded(scenario(False)).status == CANCELLED and arm.stiffness_service.sets == []
+    result = run_guarded(scenario(True))
+    assert result.status == DONE, result.reason
+    assert arm.stiffness_service.sets == [[2500.0] * 3, [500.0] * 3]
+    record = json.loads(json.dumps(lab.run.files()[-1]))
+    assert record["command"]["stiffness"] == 2500.0
+
+
 def test_a_compliant_parts_question_names_the_robot_and_is_recorded():
     """The spiral's warning, asked through the job's prompts, names the robot and the movement first.
 

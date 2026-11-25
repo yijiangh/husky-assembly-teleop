@@ -48,6 +48,8 @@ NUMBER_SETTINGS = {"insert_split_mm": ("the insert split", SPLIT_RANGE, "mm"),
                    "plan_tries": ("the search's tries", PLAN_TRIES_RANGE, "whole tries")}
 #: Each setting's type, its default's: a request is converted to it.
 SETTING_TYPES = {each.name: type(each.default) for each in fields(RunSettings)}
+#: Settings a step running does not refuse: the close asks its question again under them, then keeps what it asked.
+GRASP_SETTINGS = frozenset(("grasp_controller", "grasp_stiffness"))
 #: How far the loaded process's runs were read; only OPEN allows writes.
 NO_PROCESS, OPENING, OPEN, NOT_OPENED = "", "opening", "open", "not opened"
 

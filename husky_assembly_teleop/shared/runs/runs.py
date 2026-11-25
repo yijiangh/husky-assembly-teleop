@@ -117,7 +117,8 @@ class RunSettings:
         insert_stiffness_along: Its stiffness along the tool (tool0 z, the insert's direction), N/m.
         grasp_controller: The arm's controller while a Robotiq closes on a bar another robot holds (GRASP_CONTROLLERS):
             compliant, it gives way to the bar; joint, it holds where it stands, so the close pulls the bar to it.
-        grasp_stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m (STIFFNESS_RANGE).
+        grasp_stiffness: The compliant grasp's stiffness along tool0 x, y and z, N/m (STIFFNESS_RANGE). Both grasp
+            settings may change while a close waits for Confirm, which then asks again.
         plan_max_time: Seconds per try of tamp's free search (PLAN_TIME_RANGE); `FreeSearch`'s defaults, the five.
         plan_max_iterations: Iterations per try of it (PLAN_ITERATIONS_RANGE).
         plan_joint_resolution: The joint step of its collision checks, radians (PLAN_RESOLUTION_RANGE).

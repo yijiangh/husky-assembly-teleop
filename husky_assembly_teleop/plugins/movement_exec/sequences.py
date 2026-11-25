@@ -7,8 +7,8 @@ change between the last check and the send; the other robots are frozen (`ctx.fr
 Clearance ticked a plain motion keeps a clearance too (`motion_clearance`); inserts, retreats, handoffs and the servo
 touch by design and keep none. The Robotiq steps and the steps done by hand ask the operator first, the robot named.
 An insert, a retreat and the Robotiq handoff run partly compliant (`shared/execution/`), with the run's settings read
-once when the part starts. The servo part (`servo_part.py`) runs on the same `Job`, `PartRun` and checks; the plugin
-dispatches it.
+once when the part starts (the handoff's at its Confirm). The servo part (`servo_part.py`) runs on the same `Job`,
+`PartRun` and checks; the plugin dispatches it.
 
 ! Main thread, inside the plugin's task.
 """
@@ -81,6 +81,8 @@ if TYPE_CHECKING:
 
 #: Seconds the retreat's tail may take to plan; without a plan by then the retreat fails.
 REPLAN_TIMEOUT = 60.0
+#: Seconds the grasp settings stand unchanged before a close waiting for Confirm asks again under them.
+GRASP_SETTLED_S = 0.3
 
 
 @dataclass
@@ -407,7 +409,7 @@ def _clamped(value: float, bounds: tuple[float, float]) -> float:
 
 
 def grasp_settings(job: Job) -> GraspSettings:
-    """The run's grasp settings, read once as the close starts: joint, or compliant at the clamped stiffness."""
+    """The run's grasp settings now: joint, or compliant at the clamped stiffness."""
     settings = job.run.view.settings
     if settings.grasp_controller == JOINT:
         return GraspSettings(JOINT)
@@ -699,6 +701,40 @@ async def _replan(job: Job, part: PartPlan) -> RouteResult | None:
         return None
 
 
+async def _confirmed_grasp(job: Job, run: PartRun, arm: str) -> GraspSettings | None:
+    """Ask for a close under the run's grasp settings, again once they changed; a Cancel ends the part as cancelled.
+
+    ! Use what it returns, never the run's settings: those may have changed since the operator confirmed the question.
+
+    Returns:
+        GraspSettings | None: The settings the confirmed question named; None on Cancel.
+    """
+    ctx, operator = job.ctx, PartOperator(job, run.part.movement)
+    while True:
+        asked = latest = grasp_settings(job)
+        run.command = {"tool": "robotiq", "arm": arm, "position": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT,
+                       "compliant": asked.controller == COMPLIANCE, "controller": asked.controller,
+                       "stiffness": asked.stiffness}
+        prompt, changed_at = operator.open(handoff_text(arm, asked)), ctx.now()
+        try:
+            # * A slider being dragged asks once, when it stops; a Confirm meanwhile is for the old question: asked
+            #   again.
+            while (answer := operator.poll(prompt)) is None:
+                if latest != asked and ctx.now() - changed_at >= GRASP_SETTLED_S:
+                    break
+                await ctx.next_tick()
+                if (now := grasp_settings(job)) != latest:
+                    latest, changed_at = now, ctx.now()
+        finally:
+            operator.close(prompt)
+        if answer is False:
+            run.ended(CANCELLED, "cancelled", "cancelled at the prompt; nothing sent")
+            return None
+        if answer and grasp_settings(job) == asked:
+            return asked
+        _say(job, f"{run.part.movement}: the grasp settings changed: asked again")
+
+
 async def _handoff(job: Job, run: PartRun) -> None:
     """Close a Robotiq on a bar another robot holds, under the run's grasp controller, after the prompt."""
     ctx, part = job.ctx, run.part
@@ -706,11 +742,8 @@ async def _handoff(job: Job, run: PartRun) -> None:
     if gripper is None:
         return
     arm = part.tools[0]
-    grasp = grasp_settings(job)
-    run.command = {"tool": "robotiq", "arm": arm, "position": ROBOTIQ_CLOSE, "effort": ROBOTIQ_EFFORT,
-                   "compliant": grasp.controller == COMPLIANCE, "controller": grasp.controller,
-                   "stiffness": grasp.stiffness}
-    if not await confirmed(job, run, f"{part.movement} — {handoff_text(arm, grasp)}"):
+    grasp = await _confirmed_grasp(job, run, arm)
+    if grasp is None:
         return
     problem = world_problem(job, motion=False)
     if problem:

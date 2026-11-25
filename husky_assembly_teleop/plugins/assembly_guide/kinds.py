@@ -547,7 +547,8 @@ class GripperKind(Kind):
                                             "and the frame to the gripper")
         self._stiffness = gui.add_slider("Grasp stiffness", min=STIFFNESS_RANGE[0], max=STIFFNESS_RANGE[1],
                                          step=100.0, initial_value=RunSettings().grasp_stiffness,
-                                         hint="The compliant grasp's stiffness along tool0 x, y, z, N/m")
+                                         hint="The compliant grasp's stiffness along tool0 x, y, z, N/m; moved "
+                                              "while Go waits, the question is asked again with it")
         for widget, setting, kind in ((self._grasp, "grasp_controller", str),
                                       (self._stiffness, "grasp_stiffness", float)):
             widget.on_update(ctx.defer_value(setting, lambda value, setting=setting, kind=kind:
