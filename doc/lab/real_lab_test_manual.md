@@ -729,7 +729,7 @@ What it checks and what a `FAIL` means:
     - an arm's *arm* red: its safety sync says why: the pendant in Local, the program not playing, a protective
       stop (`Unlock` under Health, once you know why), or `Stop all` (`Resume`).
     - *signal* amber or red, *stamps ... in the future (robot clock ahead; time sync?)* or
-      *every message over ... ms late*: the clocks (1.d), or a slow Wi-Fi link.
+      *every message over ... ms late*: the clocks (1.d), or a slow Wi-Fi link (`wifi_watch.py`, 7.h).
 - [ ] Optional, the phone: *http://\<this PC>:8081* (*192.168.0.201* or *.203*) on the robot Wi-Fi
       (*doc/lab/phone_manual.md*): `Stop all`, `Health`, and the `Exec` tab's `Confirm` / `Cancel` next to the robots.
 
@@ -1280,6 +1280,7 @@ All in `scripts/real_lab/`, beside the fake lab's `scripts/fake_lab/`. Each says
 | `relay.sh` | the mocap relay against the Motive PC, with the Drive's calibrations |
 | `monitor.sh` | the monitor: the three robots, the labs' plugins (`lab_common.sh`), the process from the Drive; opens its page once started |
 | `check_robots.sh [robot ...]` | Part 3's read-only checks |
+| `../wifi_watch.py` | the Wi-Fi, in a terminal of its own (venv, no ROS): pings the router and the robots, plots live, pops up when one is slow; logs to `~/.ros/wifi_watch/` |
 | `../lab_common.sh` | what both labs share, sourced by their scripts: the monitor's plugins, the clean environment each process starts in, the monitor's start line, the tmux panes |
 
 Settings: given to `tmux.sh` when it makes the session, they reach every pane (`REAL_LAB_MOTIVE=192.168.0.117

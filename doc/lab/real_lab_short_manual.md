@@ -229,6 +229,7 @@ unbuilt bars, tick **Ignore built bars** for that plan only.
 | what | do |
 |---|---|
 | a robot's chips red, or something does not start | `<workspace>/src/husky-assembly-teleop/scripts/real_lab/check_robots.sh` (add `cindy` to check one robot; read-only, about 20 s): this laptop's network, router and clock, and per robot her launch, controllers (compliance loaded), crl-husky messages and rigid body. Each FAIL says what to do |
+| *signal* chips turn amber or red, or motions stop on old data | `python <workspace>/src/husky-assembly-teleop/scripts/wifi_watch.py`, in the venv: pings the router and the robots, plots live, pops up when one is slow (over 200 ms), and logs to `~/.ros/wifi_watch/`. Robots slow at the same time while the router stays fast: the Wi-Fi |
 | restart the monitor mid-assembly | `Ctrl-C` once, wait, start it again, reload the page, **Load**: it says `continuing run …` and the done actions stay done. Do not click New run |
 | `HOLD NOT SENT on …` | that arm did not get its hold: stop it with the pendant or the e-stop |
 | an e-stop or protective stop while an arm holds a bar | do not zero its force sensor, open or reactivate its gripper, or restart its launch. E-stop: release it, then on the pendant **ON** and **START**; protective stop: clear the cause, **Unlock** in Health. Then **Stop recovery** › the robot › **Go back** twice: it moves back to the pose before the stop. Go on only once its force is back near 0 N off |
