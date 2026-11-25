@@ -98,6 +98,26 @@ class Lab:
         """robot_control's `leased` for Alice's arm, as its builders get it."""
         return partial(self.plugin._leased, self.ctx, KEY)
 
+    def tool_inputs(self) -> None:
+        """Add the TOOL section of Alice's arm, as robot_control does."""
+        build_tool_inputs(self.ctx, self.ctx.gui, "a200-0804 ur_arm", self.arm, self.leased(),
+                          partial(self.plugin._gripped, self.ctx, KEY, self.gripper))
+
+    def grip_button(self, label: str = "Grip"):
+        """A button row of the TOOL section."""
+        return next(widget for widget in self.ctx.gui.of_kind("button_group") if widget.label == label)
+
+    def assembly(self, process: object = object(), folder: object = "runs/1") -> list:
+        """A run with B21_H_to_grasp current (no process if None, not begun with no folder); the list it records."""
+        records = []
+        movements = [SimpleNamespace(id="B21_H_to_grasp")]
+        loaded = SimpleNamespace(process=SimpleNamespace(actions={"B21_H": SimpleNamespace(movements=movements)}))
+        self.ctx.plugins["assembly_run"] = SimpleNamespace(
+            view=SimpleNamespace(process=loaded if process is not None else None, current=("B21_H", 0),
+                                 folder=folder),
+            request_record=lambda event, **fields: records.append((event, fields)))
+        return records
+
     def refusals(self) -> list[str]:
         """The refusal lines logged so far."""
         return [line for line in self.ctx.lines("warn") if f"is leased by {EXEC}" in line]
@@ -152,7 +172,7 @@ def test_every_command_to_alice_is_refused_while_the_executor_leases_every_robot
         await asyncio.gather(*control._trajectory_tasks.values(), return_exceptions=True)
 
     asyncio.run(start())
-    build_tool_inputs(lab.ctx, lab.ctx.gui, "a200-0804 ur_arm", lab.arm, lab.leased())
+    lab.tool_inputs()
     switches = []
     controllers = SimpleNamespace(namespace="/a200_0804/ur5e", switchable=(FREE_DRIVE_CONTROLLER,),
                                   switch=switches.append)
@@ -175,7 +195,7 @@ def test_every_command_to_alice_is_refused_while_the_executor_leases_every_robot
 def test_stop_and_hold_go_out_while_the_executor_leases_every_robot():
     """A tool's Stop cancels its goal and Hold sends a one-point hold: neither needs a lease."""
     lab = Lab()
-    build_tool_inputs(lab.ctx, lab.ctx.gui, "a200-0804 ur_arm", lab.arm, lab.leased())
+    lab.tool_inputs()
     grip, = (widget for widget in lab.ctx.gui.of_kind("button_group") if widget.label == "Grip")
     grip.callback("Open")  # * before the lease: a goal running, which Stop must still cancel
     goal, = lab.gripper._action.goals
@@ -187,6 +207,65 @@ def test_stop_and_hold_go_out_while_the_executor_leases_every_robot():
     lab.plugin._hold_arm(SERIAL, lab.arm)
     hold, = lab.arm._trajectory.messages
     assert len(hold.points) == 1
+
+
+def test_the_control_tabs_gripper_is_recorded_during_an_assembly():
+    """Open sends the goal and records the press at the run's current step, the fingers it started from."""
+    lab = Lab()
+    records = lab.assembly()
+    lab.gripper.state.position = 0.667
+    lab.tool_inputs()
+    lab.grip_button().callback("Open")
+    assert len(lab.gripper._action.goals) == 1
+    (event, fields), = records
+    assert (event, fields["action"], fields["movement"]) == ("manual_grip", "B21_H", "B21_H_to_grasp")
+    data = fields["data"]
+    assert (data["source"], data["serial"], data["arm"], data["grip"]) == ("control", SERIAL, "ur_arm", "open")
+    assert (data["status"], data["before"]) == ("sent", 0.667)
+
+
+def test_the_control_tabs_go_and_reactivate_are_recorded_too():
+    """Both move the fingers: Go keeps its target and force."""
+    lab = Lab()
+    records = lab.assembly()
+    lab.gripper.reactivate = lambda: None
+    lab.tool_inputs()
+    lab.grip_button("Target").callback("Go")
+    lab.grip_button("Driver").callback("Reactivate")
+    assert [fields["data"]["grip"] for _event, fields in records] == ["go", "reactivate"]
+    assert {"target", "force"} <= set(records[0][1]["data"])
+
+
+def test_a_refused_control_tab_gripper_is_recorded_with_why():
+    """Under the executor's lease nothing goes out; the record says refused and names the lease."""
+    lab = Lab()
+    records = lab.assembly()
+    lab.tool_inputs()
+    lab.lease_every_robot()
+    lab.grip_button().callback("Close")
+    assert lab.gripper._action.goals == []
+    data = records[0][1]["data"]
+    assert data["status"] == "refused" and f"is leased by {EXEC}" in data["reason"]
+
+
+def test_the_control_tabs_stop_is_not_recorded():
+    """Stop moves nothing by hand."""
+    lab = Lab()
+    records = lab.assembly()
+    lab.tool_inputs()
+    lab.grip_button().callback("Stop")
+    assert records == []
+
+
+@pytest.mark.parametrize("assembly", [None, "no process", "no run yet"])
+def test_the_control_tabs_gripper_outside_an_assembly_goes_out_unrecorded(assembly):
+    """No run plugin, one with no process, or no run begun (a press begins none): the goal goes out, unrecorded."""
+    assert "assembly_run" in RobotControlPlugin.uses, "else `require` refuses it and nothing is ever recorded"
+    lab = Lab()
+    records = [] if assembly is None else lab.assembly(None) if assembly == "no process" else lab.assembly(folder=None)
+    lab.tool_inputs()
+    lab.grip_button().callback("Open")
+    assert len(lab.gripper._action.goals) == 1 and records == []
 
 
 def test_a_zero_force_needs_the_lease():

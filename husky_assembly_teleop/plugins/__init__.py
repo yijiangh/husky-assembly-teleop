@@ -7,8 +7,8 @@ Add a file with @register; run it with `plugins:="<name>"`. Its tests go in `tes
 ! Everything that is not a real robot lives here; the runtime knows nothing about
   bars, racks or assembly steps. Plugins draw only into their own PluginView.
 ! Plugins never import each other (test/structure/test_layers.py): shared code, data types and service interfaces go in
-  `shared/`, and another plugin's live data comes only from `ctx.require`, for names in `requires`, typed by its
-  `<Name>Contract` Protocol in `shared/`.
+  `shared/`, and another plugin's live data comes only from `ctx.require`, for names in `requires` (or `uses`, if
+  loaded), typed by its `<Name>Contract` Protocol in `shared/`.
 
 * Scene rules:
   - Put collision objects in `ctx.scene` under "<plugin name>/…"; the runtime draws

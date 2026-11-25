@@ -133,3 +133,5 @@ RUN_EXEC, RUN_SERVO, RUN_PLAN, RUN_MARK_DONE, RUN_CANCEL, RUN_SOFT_STOP = (
 RUN_PROMPT, RUN_CONFIRM, RUN_CHECK_GOAL, RUN_GUIDE = "prompt", "confirm", "check_goal", "guide"
 RUN_FORGET, RUN_REOPEN, RUN_NEW, RUN_CONTINUE, RUN_AS_BUILT, RUN_SESSION = (
     "forget", "reopen", "new_run", "continue", "as_built", "session")
+RUN_SAFETY_MODE, RUN_BASE_ESTOP, RUN_GRIPPER_FAILED, RUN_MANUAL_GRIP = (
+    "safety_mode", "base_estop", "gripper_failed", "manual_grip")

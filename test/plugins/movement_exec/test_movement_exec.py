@@ -36,7 +36,7 @@ from husky_assembly_teleop.shared.runs.finished import ZERO_EVENT
 from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
-from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE
+from husky_assembly_teleop.shared.execution.tools import ROBOTIQ_CLOSE, ROBOTIQ_OPEN
 from husky_assembly_teleop.shared.movement_exec_contract import (CANCELLED, DEFAULT_TRAJ_TIME, DONE, DRY_RUN, FAILED,
                                                                  HANDOFF_PART, HOLD_NOT_SENT, INSERT_PART, LATER,
                                                                  REFUSED, REFUSED_PART, RETREAT_PART, SERVO_INDEX,
@@ -49,6 +49,8 @@ from husky_assembly_teleop.shared.assembly_planning.route_result import RouteRes
 from husky_assembly_teleop.shared.assembly_planning.servo_route import ServoStep
 from husky_assembly_teleop.shared.assembly_planning.steps import operator_steps
 from husky_assembly_teleop.shared.runs.runs import RunSettings
+from husky_assembly_teleop.ui.css import group_buttons
+from husky_assembly_teleop.ui.second_press import DOUBLE_CLICK_SECONDS, SECOND_PRESS_SECONDS
 from husky_assembly_teleop.world.tcp import tool0_in_base_link
 from scaffolding_assembly_core.geometry import Pose, compose
 from scaffolding_assembly_core.ids import robot_id
@@ -1352,7 +1354,7 @@ def test_confirm_and_cancel_are_buttons_of_their_own_in_the_assembly_tab():
     assert [(button.label, button.color) for button in buttons if button.label not in (GIVE_UP, TOOL0_SERVO)] == [
         ("Confirm", "green"), ("Cancel", "red"), ("As-built: record now", None), ("Confirm", "green"),
         ("Cancel", "red")]
-    assert lab.ctx.gui.of_kind("button_group") == []
+    assert not [group for group in lab.ctx.gui.of_kind("button_group") if "Confirm" in group.value]
     buttons[0].callback()
     assert lab.plugin._last == "nothing to answer"
     buttons[1].callback()
@@ -1827,3 +1829,307 @@ def test_the_carry_goes_with_its_servo_redone_or_another_run():
 
     run_guarded(another_run())
     assert lab.plugin.carried is None
+
+
+# --- --- --- --- --- the gripper buttons --- --- --- --- ---
+
+def grip_lab(current) -> Lab:
+    """The lab at `current` with a run begun, so a gripper button can be recorded, every robot standing still."""
+    lab = Lab(current=current)
+    lab.run.view.folder = Path("runs/1")
+    return lab
+
+
+def zeros(lab: Lab, serial: str = "a200-0804") -> list:
+    """The force sensor zeros sent to a support robot's arm."""
+    return lab.ctx.world.robots[serial].arms["ur_arm"]._zero_ft.calls
+
+
+def later(lab: Lab, seconds: float) -> None:
+    """Let `seconds` pass, the robots reporting at the end."""
+    lab.ctx.t += seconds
+    lab.tick(lab.ctx.t)
+
+
+def press_grip(lab: Lab, grip: str, serial: str = "a200-0804", during=None) -> None:
+    """Press a gripper button of Alice's arm, twice if it asks, and wait until it ended; `during(lab)` runs after."""
+    async def scenario():
+        lab.plugin.request_manual_grip(serial, "ur_arm", grip)
+        if lab.plugin._grip_press.key:
+            later(lab, DOUBLE_CLICK_SECONDS + 0.05)
+            lab.plugin.request_manual_grip(serial, "ur_arm", grip)
+        if during is not None:
+            await during(lab)
+        if lab.plugin.active:
+            await asyncio.wait([lab.plugin._task])
+        await asyncio.sleep(0)
+    run_guarded(scenario())
+
+
+def grip_events(lab: Lab) -> list[dict]:
+    """What the run recorded for the gripper buttons."""
+    return [fields for event, fields in lab.run.records if event == "manual_grip"]
+
+
+@pytest.mark.safety
+def test_a_gripper_button_opens_and_is_recorded_at_the_current_step():
+    """Open at B21_H's to_grasp: 0.426 sent, the lease given back, one event with the fingers before and after."""
+    lab = grip_lab(("B21_H", 2))
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    gripper.state.position = 0.667
+    press_grip(lab, "open")
+    assert [goal.command.position for goal in gripper._action.goals] == [ROBOTIQ_OPEN]
+    assert lab.free()
+    event = grip_events(lab)
+    assert len(event) == 1 and event[0]["action"] == "B21_H" and event[0]["movement"] == "B21_H_to_grasp"
+    data = event[0]["data"]
+    assert (data["serial"], data["arm"], data["grip"], data["before"]) == ("a200-0804", "ur_arm", "open", 0.667)
+    assert data["status"] == "reached" and data["after"] == pytest.approx(ROBOTIQ_OPEN, abs=0.02)
+
+
+@pytest.mark.safety
+def test_a_gripper_button_closes_with_the_arm_compliant():
+    """Close from open is the handoff: the arm under compliance, CLOSED; the samples stay out of the event."""
+    lab = grip_lab(("B21_H", 3))
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+    arm.end_effector.state.position = ROBOTIQ_OPEN
+    press_grip(lab, "close")
+    assert [goal.command.position for goal in arm.end_effector._action.goals] == [ROBOTIQ_CLOSE]
+    assert arm.controllers.switches
+    data = grip_events(lab)[0]["data"]
+    assert data["status"] == "CLOSED", data["reason"]
+    assert data["detail"]["grasp"]["stiffness"] == RunSettings().grasp_stiffness
+    assert "stream" not in data["detail"] and "anchor" in data["detail"]
+    json.dumps(data)
+    assert lab.free()
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("position", [0.667, None])
+def test_a_gripper_button_will_not_close_fingers_not_known_open(position):
+    """Closed already, or not measured: nothing sent and no switch (its zero would tare a held bar); recorded."""
+    lab = grip_lab(("B21_H", 3))
+    arm = lab.alice.arms["ur_arm"]
+    arm.end_effector.state.position = position
+    press_grip(lab, "close")
+    assert arm.end_effector._action.goals == [] and arm.controllers.switches == [] and zeros(lab) == []
+    data = grip_events(lab)[0]["data"]
+    assert data["status"] == REFUSED and "a bar may be in them" in data["reason"]
+    assert lab.free()
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("why", ["soft stopped", "not measured now", "reactivates", "running a trajectory"])
+def test_a_gripper_button_will_not_close_when(why):
+    """Soft stopped, the fingers' angle old, reactivating, another robot moving: no zero, switch or goal; recorded."""
+    lab = grip_lab(("B21_H", 3))
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+    gripper = arm.end_effector
+    gripper.state.position = ROBOTIQ_OPEN
+    if why == "soft stopped":
+        lab.alice.soft_stop_latch.stopped = True
+    elif why == "not measured now":
+        for driver in lab.drivers:
+            driver.reports = False
+        later(lab, 1.5)
+    elif why == "reactivates":
+        gripper.state.reactivating = True
+    else:
+        lab.cindy.arms["left_ur_arm"].state.is_executing = True
+    press_grip(lab, "close")
+    assert gripper._action.goals == [] and arm.controllers.switches == [] and zeros(lab) == []
+    data = grip_events(lab)[0]["data"]
+    assert data["status"] == REFUSED and why in data["reason"], data["reason"]
+    assert lab.free()
+
+
+@pytest.mark.safety
+def test_a_step_never_grasps_with_the_fingers_closed_already():
+    """After a Close by hand the step's own grasp is refused: its zero would tare the bar in the fingers."""
+    lab = Lab(current=("B21_H", 3))
+    lab.track("a200-0804")
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    gripper.state.position = 0.667
+    result, _held = execute(lab, lab.request("B21_H_close", serial="a200-0804", route=None), True)
+    assert result.status != DONE and "open them first" in result.reason
+    assert gripper._action.goals == [] and zeros(lab) == []
+    assert lab.alice.arms["ur_arm"].controllers.switches == []
+
+
+@pytest.mark.safety
+def test_a_close_asked_under_other_grasp_settings_asks_again():
+    """The question names the grasp settings; changed before the second press, that press only asks."""
+    lab = grip_lab(("B21_H", 3))
+    lab.track("a200-0804")
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    gripper.state.position = ROBOTIQ_OPEN
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "close")
+    assert "arm compliant, 1500 N/m" in lab.plugin._last
+    lab.run.request_settings(grasp_controller="joint")
+    later(lab, 1.0)
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "close")
+    assert "arm STIFF" in lab.plugin._last and gripper._action.goals == [] and zeros(lab) == []
+    press_grip(lab, "close")
+    assert len(gripper._action.goals) == 1 and lab.alice.arms["ur_arm"].controllers.switches == []
+    assert grip_events(lab)[0]["data"]["detail"]["grasp"]["controller"] == "joint"
+
+
+def test_a_gripper_button_never_hides_a_hold_not_sent():
+    """Asked or refused, the line saying an arm's hold was not sent stays."""
+    lab = grip_lab(("B21_H", 3))
+    lab.plugin._last, lab.plugin._last_failed, lab.plugin._hold_lost = "HOLD NOT SENT", True, True
+    lab.alice.arms["ur_arm"].end_effector.state.position = 0.667
+    press_grip(lab, "close")
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "open")
+    assert lab.plugin._last == "HOLD NOT SENT" and lab.plugin._hold_lost
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("grip", ["open", "close"])
+def test_a_gripper_button_in_a_dry_run_sends_nothing(grip):
+    """Every check, no goal, no switch, no zero; recorded as a dry run."""
+    lab = grip_lab(("B21_H", 3))
+    lab.track("a200-0804")
+    arm = lab.alice.arms["ur_arm"]
+    arm.end_effector.state.position = ROBOTIQ_OPEN
+    lab.plugin.request_dry_run(True)
+    press_grip(lab, grip)
+    assert arm.end_effector._action.goals == [] and arm.controllers.switches == [] and zeros(lab) == []
+    assert grip_events(lab)[0]["data"]["dry_run"] and lab.free()
+
+
+@pytest.mark.safety
+def test_a_close_cancelled_stops_the_fingers_and_gives_the_robots_back():
+    """Cancel while the fingers close: the goal cancelled, the stiffness set back, recorded, every lease given back."""
+    lab = grip_lab(("B21_H", 3))
+    lab.track("a200-0804")
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    gripper.state.position = ROBOTIQ_OPEN
+
+    async def cancel(lab):
+        while not gripper._action.goals:
+            await asyncio.sleep(0)
+        lab.plugin.request_cancel()
+    press_grip(lab, "close", during=cancel)
+    assert gripper._action.goals[0].cancelled
+    assert grip_events(lab)[0]["data"]["status"] == CANCELLED and lab.free()
+
+
+@pytest.mark.safety
+def test_a_gripper_button_is_refused_while_a_step_runs():
+    """A press at a step's prompt sends nothing, is recorded refused, and leaves the step its lease."""
+    lab = grip_lab(("B35_H", 1))
+    gripper = lab.belle.arms["ur_arm"].end_effector
+
+    async def scenario():
+        future = lab.plugin.request_execute(lab.request("B35_H_open", serial="a200-0805", route=None))
+        while lab.plugin.prompt is None:
+            await asyncio.sleep(0)
+        lease = lab.belle.lease_slot.lease
+        lab.plugin.request_manual_grip("a200-0805", "ur_arm", "open")
+        assert lab.belle.lease_slot.lease is lease
+        await answer(lab, False)
+        await future
+    run_guarded(scenario())
+    assert gripper._action.goals == []
+    assert grip_events(lab)[0]["data"]["status"] == REFUSED
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("missing", ["process", "folder"])
+def test_a_gripper_button_before_a_run_sends_nothing(missing):
+    """No process, or no run begun (nor one chosen): nothing could record it, nothing sent, the panel says why."""
+    lab = grip_lab(("B21_H", 3))
+    setattr(lab.run.view, missing, None)
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    gripper.state.position = 0.667
+    press_grip(lab, "open")
+    assert gripper._action.goals == [] and grip_events(lab) == []
+    assert "no run has begun" in lab.plugin._last and lab.free()
+
+
+def test_a_cancelled_gripper_button_is_recorded():
+    """Cancel while the fingers move: they stop, the event says who cancelled, the lease is given back."""
+    lab = grip_lab(("B21_H", 3))
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    gripper.state.position = 0.667
+
+    async def cancel(lab):
+        await asyncio.sleep(0)
+        lab.plugin.request_cancel()
+    press_grip(lab, "open", during=cancel)
+    data = grip_events(lab)[0]["data"]
+    assert data["status"] == CANCELLED and "operator" in data["reason"]
+    assert lab.free()
+
+
+@pytest.mark.safety
+def test_a_gripper_buttons_first_press_only_asks():
+    """Nothing sent, leased or recorded; a double click still only asks; the second press within the window goes."""
+    lab = grip_lab(("B21_H", 2))
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "open")
+    later(lab, DOUBLE_CLICK_SECONDS / 2)
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "open")
+    assert gripper._action.goals == [] and grip_events(lab) == [] and lab.free() and not lab.plugin.active
+    assert "Press it again" in lab.plugin._last
+    press_grip(lab, "open")
+    assert [goal.command.position for goal in gripper._action.goals] == [ROBOTIQ_OPEN]
+    assert len(grip_events(lab)) == 1
+
+
+@pytest.mark.parametrize("meanwhile", ["too late", "other button", "cancel"])
+def test_a_gripper_buttons_first_press_is_forgotten(meanwhile):
+    """Past its window, after the other button, or after Cancel, the next press only asks again."""
+    lab = grip_lab(("B21_H", 2))
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "open")
+    if meanwhile == "too late":
+        later(lab, SECOND_PRESS_SECONDS + 0.1)
+    elif meanwhile == "other button":
+        later(lab, 1.0)
+        lab.plugin.request_manual_grip("a200-0805", "ur_arm", "open")
+        later(lab, 1.0)
+    else:
+        lab.plugin.request_cancel()
+        later(lab, 1.0)
+    lab.plugin.request_manual_grip("a200-0804", "ur_arm", "open")
+    assert gripper._action.goals == [] and grip_events(lab) == [] and lab.free()
+
+
+def test_a_gripper_button_waiting_is_amber_with_its_question_mark():
+    """Only the pressed button, on the laptop and the phone; its "?" label still works; it rests once answered."""
+    lab = grip_lab(("B21_H", 2))
+    gripper = lab.alice.arms["ur_arm"].end_effector
+    rows = [widget for widget in lab.ctx.view.gui.widgets if widget.label == "Gripper 0804"]
+    others = [widget for widget in lab.ctx.view.gui.widgets if widget.label == "Gripper 0805"]
+    assert len(rows) == 2 and len(others) == 2
+
+    def draw():
+        lab.plugin.draw(lab.ctx)
+        return {tuple(row.options) for row in rows}, {tuple(row.options) for row in others}
+
+    rows[0].callback("Open")
+    assert draw() == ({("Open?", "Close")}, {("Open", "Close")})
+    assert any(group_buttons(rows[0]._impl.uuid, 0) in widget.content
+               for widget in lab.ctx.view.gui.widgets if widget.kind == "html")
+
+    async def scenario():
+        later(lab, 1.0)
+        rows[1].callback("Open?")
+        await asyncio.wait([lab.plugin._task])
+        await asyncio.sleep(0)
+    run_guarded(scenario())
+    assert [goal.command.position for goal in gripper._action.goals] == [ROBOTIQ_OPEN]
+    assert draw() == ({("Open", "Close")}, {("Open", "Close")})
+    assert not any("!important" in widget.content for widget in lab.ctx.view.gui.widgets if widget.kind == "html")
+
+
+def test_the_exec_panel_has_gripper_buttons_for_every_robotiq():
+    """Alice and Belle have Robotiqs, on the laptop and the phone; Cindy's scaffolding tools get none."""
+    lab = Lab()
+    labels = [widget.label for widget in lab.ctx.view.gui.widgets if widget.kind == "button_group"]
+    assert labels.count("Gripper 0804") == 2 and labels.count("Gripper 0805") == 2
+    assert "Gripper 0806" not in labels

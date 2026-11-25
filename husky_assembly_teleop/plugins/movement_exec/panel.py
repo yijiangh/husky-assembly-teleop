@@ -1,7 +1,8 @@
 """
 The movement_exec part of the Assembly tab and the phone's Exec tab: what runs, the prompt, Confirm, Cancel, Dry run.
 
-A live line below the buttons follows the compliant part running.
+A live line below the buttons follows the compliant part running. A gripper's Open and Close, the backup when a step
+did not do it, ask first (`SecondPress`), run outside any step and are recorded in the run.
 
 ! Never hide a row or a button, and keep every changing line one line tall, so nothing moves under the cursor.
 """
@@ -18,9 +19,11 @@ from ...colors import rgb
 from ...plugin_api.context import PluginContext
 from ...robot_interface.end_effectors import ScaffoldingV3
 from ...shared.assembly_tab.layout import CANCEL_ICON, CONFIRM_ICON, EXEC_SETTINGS_BAND, PROMPT_BAND
+from ...shared.execution.tools import ROBOTIQ_OPEN
 from ...ui.css import side_by_side_css
 from ...ui.phone import big_buttons, phone_text
 from ...ui.popup import Popup
+from ...ui.second_press import SECOND_PRESS_SECONDS, again_label, waiting_group_css
 from ...ui.style import BUSY, FAIL, NONE, SECTION_CTRL, block, chip, chip_line, section
 from .servo_measure import GIVE_UP, TOOL0_SERVO
 
@@ -31,6 +34,14 @@ if TYPE_CHECKING:
 
 #: Cancel's hover text, on the desktop and the phone.
 CANCEL_HINT = "Answer no; with no prompt open, stop the running step and hold every arm where it is"
+#: A gripper button's label -> what `request_manual_grip` is asked.
+OPEN_GRIP, CLOSE_GRIP = "open", "close"
+GRIP_BUTTONS = {"Open": OPEN_GRIP, "Close": CLOSE_GRIP}
+#: The same with a label waiting for its second press, e.g. "Open?".
+GRIP_PRESSES = {**GRIP_BUTTONS, **{again_label(label): grip for label, grip in GRIP_BUTTONS.items()}}
+GRIP_HINT = (f"Asks first: press it again within {SECOND_PRESS_SECONDS:g} s. Outside any step, recorded in the run "
+             f"with the bars measured before and after. Open goes to {ROBOTIQ_OPEN:g} rad; Close takes the run's Grasp "
+             "controller and stiffness, and needs them open first.")
 
 
 class ExecPanel:
@@ -54,6 +65,7 @@ class ExecPanel:
             confirm = gui.add_button("Confirm", color="green", icon=CONFIRM_ICON, hint="Do what the prompt says")
             cancel = gui.add_button("Cancel", color="red", icon=CANCEL_ICON, hint=CANCEL_HINT)
             pair.content = f"<style>{side_by_side_css([confirm._impl.uuid, cancel._impl.uuid])}</style>"
+            self._grips = GripButtons(ctx, gui, plugin)
             # ! Keep changing text BELOW the buttons.
             self._live = gui.add_html("")
             self._details = gui.add_html("")
@@ -79,6 +91,7 @@ class ExecPanel:
             self._phone_prompt = phone.add_html("")
             confirm = phone.add_button("Confirm", color="green", icon=CONFIRM_ICON)
             cancel = phone.add_button("Cancel", color="red", icon=CANCEL_ICON, hint=CANCEL_HINT)
+            self._phone_grips = GripButtons(ctx, phone, plugin)
             self._phone_live = phone.add_html("")
             self._phone_last = phone.add_html("")
             self._phone_servo = phone.add_html("")
@@ -86,7 +99,7 @@ class ExecPanel:
         cancel.on_click(ctx.defer("exec cancel (phone)", plugin.request_cancel))
 
     def draw(self, active: str, prompt: Prompt | None, dry_run: bool, last: tuple[str, bool], refused: int,
-             recorder: Recorder | None = None, servo: str = "") -> None:
+             recorder: Recorder | None = None, servo: str = "", grip_waiting: str = "") -> None:
         """Write the state into the widgets.
 
         Args:
@@ -98,7 +111,10 @@ class ExecPanel:
             recorder: The samples of the compliant part running, or None.
             servo: The running servo's last reading, e.g. "servo 2/8 · tool0 L 0.31 R 0.27 mm", or how the last servo
                 ended (grey once the request is over); "" for none.
+            grip_waiting: The gripper button waiting for its second press (`grip_key`), or "".
         """
+        self._grips.draw(grip_waiting)
+        self._phone_grips.draw(grip_waiting)
         chips = chip("DRY RUN", BUSY, "every check, nothing sent") if dry_run else ""
         chips += (chip(escape(active), BUSY, "this request runs; Cancel stops it and holds every arm") if active
                   else chip("idle", NONE, "no request running; an Exec button starts one"))
@@ -131,6 +147,47 @@ class ExecPanel:
         line = _one_line(escape(servo) or "&nbsp;", BUSY if servo and active else NONE)
         self._servo.content = block(line)
         self._phone_servo.content = phone_text(block(line))
+
+
+def grip_key(serial: str, arm: str, grip: str) -> str:
+    """What a gripper button's first press waits under (`SecondPress`)."""
+    return f"{serial} {arm} {grip}"
+
+
+class GripButtons:
+    """Open and Close of every configured Robotiq in one GUI, at any step: a robot holds a bar across steps."""
+
+    def __init__(self, ctx: PluginContext, gui: viser.GuiApi, plugin: MovementExecPlugin):
+        """Add a row per Robotiq."""
+        #: (serial, arm name) -> its row.
+        self._rows: dict[tuple[str, str], viser.GuiButtonGroupHandle] = {}
+        for robot in ctx.config.robots:
+            for arm in robot.arms:
+                if arm.end_effector == "robotiq":
+                    row = gui.add_button_group(f"Gripper {robot.serial.rsplit('-', 1)[-1]}", list(GRIP_BUTTONS),
+                                               hint=GRIP_HINT)
+                    row.on_click(ctx.defer_value(
+                        f"manual grip {robot.serial} {arm.name}",
+                        lambda clicked, serial=robot.serial, name=arm.name: plugin.request_manual_grip(
+                            serial, name, GRIP_PRESSES[clicked])))
+                    self._rows[robot.serial, arm.name] = row
+        # * Draws nothing: makes the button waiting amber.
+        self._waiting_css = gui.add_html("")
+
+    def draw(self, waiting: str) -> None:
+        """Show the button waiting for its second press (`grip_key`) amber with its "?", and the others at rest."""
+        css = ""
+        for (serial, arm), row in self._rows.items():
+            labels = []
+            for index, (label, grip) in enumerate(GRIP_BUTTONS.items()):
+                asks = waiting == grip_key(serial, arm, grip)
+                labels.append(again_label(label) if asks else label)
+                css += waiting_group_css(row, index) if asks else ""
+            if tuple(row.options) != tuple(labels):
+                row.options = tuple(labels)
+        css = f"<style>{css}</style>" if css else ""
+        if self._waiting_css.content != css:
+            self._waiting_css.content = css
 
 
 def live_line(recorder: Recorder | None) -> str:

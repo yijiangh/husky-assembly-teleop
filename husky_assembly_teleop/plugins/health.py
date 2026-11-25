@@ -36,6 +36,7 @@ from ..colors import HUE_NAMES, INK, WHITE, rgb
 from ..plugin_api.context import PluginContext
 from ..shared.execution.moving import ask_relay
 from ..shared.guide.panel import set_changed
+from ..shared.runs.faults import SAFETY_MODE_NAMES
 from ..world.base_mocap import MocapWatch, applied_calibration, applied_frame, with_relay
 from ..world.mocap import mocap_check
 from ..world.tcp import tcp_check, tool0_by_kinematics
@@ -96,9 +97,6 @@ BATTERY_HEALTH_OK = (BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN, BatteryState.POWE
 #: RobotMode constant -> readable name, e.g. 5 -> "idle".
 ROBOT_MODE_NAMES = {getattr(RobotMode, name): name.lower().replace("_", " ")
                     for name in dir(RobotMode) if name.isupper() and isinstance(getattr(RobotMode, name), int)}
-#: SafetyMode constant -> readable name, e.g. 3 -> "protective stop".
-SAFETY_MODE_NAMES = {getattr(SafetyMode, name): name.lower().replace("_", " ")
-                     for name in dir(SafetyMode) if name.isupper() and isinstance(getattr(SafetyMode, name), int)}
 
 # ! Keep fast-changing values (ages, voltage) out of chip text: a change rebuilds the row and closes tooltips.
 

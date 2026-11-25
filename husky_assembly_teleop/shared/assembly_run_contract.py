@@ -22,6 +22,12 @@ from .runs.runs import (ASSUMED, DONE, LIVE, LIVE_BASE_AGE, LIVE_JOINTS_AGE, Act
                         RunSettings)
 
 
+#: The event of a gripper button pressed during an assembly, and the buttons it came from: the Exec panel's run the
+#: step's own close, the Control tab's are stiff.
+MANUAL_GRIP = "manual_grip"
+EXEC_GRIP, CONTROL_GRIP = "exec", "control"
+
+
 @dataclass(frozen=True)
 class RunView:
     """The assembly run as other plugins read it; replaced whenever anything in it changes, never edited.
@@ -89,6 +95,32 @@ class AssemblyRunContract(Protocol):
         as `figure_error`, the record kept. `reserved`: the file `runs.reserve_record` took for it; None: the next
         number when it is written.
         """
+
+
+def current_ids(view: RunView) -> tuple[str | None, str | None]:
+    """The (action id, movement id) the operator is at, each None if unknown."""
+    action, index = view.current if view.current is not None else (None, None)
+    return action, view.process.process.actions[action].movements[index].id if action and index is not None else None
+
+
+def record_manual_grip(run: AssemblyRunContract, source: str, serial: str, arm: str, grip: str,
+                       data: Mapping[str, Any]) -> None:
+    """Record a gripper button pressed during an assembly, at the run's current step; nothing before a run begun.
+
+    Args:
+        run: The assembly run.
+        source: Which buttons: EXEC_GRIP or CONTROL_GRIP.
+        serial: The robot.
+        arm: The arm's name.
+        grip: What was asked, e.g. "open".
+        data: How it went: at least "status".
+    """
+    view = run.view
+    if view.process is None or view.folder is None:
+        return
+    action, movement = current_ids(view)
+    run.request_record(MANUAL_GRIP, action=action, movement=movement,
+                       data={"source": source, "serial": serial, "arm": arm, "grip": grip, **data})
 
 
 def is_live(robot: RobotObject, now: float) -> bool:

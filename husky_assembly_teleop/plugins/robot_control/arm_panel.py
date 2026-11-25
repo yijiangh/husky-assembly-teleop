@@ -302,19 +302,20 @@ def build_free_drive_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
                                  "Only with someone at the arm.")
 
 
-def tool_commands(tool: EndEffector, leased: Callable[[Callable], object]) -> dict[str, Callable[[], None]]:
+def tool_commands(tool: EndEffector, gripped: Callable[..., None]) -> dict[str, Callable[[], None]]:
     """The gripper buttons, the same on the laptop and the phone: Open, Close, and Stop where the tool can stop.
 
-    Open and Close run under the robot's lease (`leased`); Stop needs none.
+    Open and Close go through `gripped`: under the robot's lease, and recorded during an assembly. Stop needs neither.
     """
-    commands = {"Open": lambda: leased(tool.open), "Close": lambda: leased(tool.close)}
+    commands = {"Open": lambda: gripped("open", tool.open), "Close": lambda: gripped("close", tool.close)}
     if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
         commands["Stop"] = tool.stop
     return commands
 
 
 def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
-                      leased: Callable[[Callable], object]) -> tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]:
+                      leased: Callable[[Callable], object], gripped: Callable[..., None]
+                      ) -> tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]:
     """Add the TOOL section for the arm's end effector: its status line and buttons.
 
     Args:
@@ -323,6 +324,8 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
         label: "<serial> <arm name>", for intent names.
         arm: The arm; must have an end effector.
         leased: Runs a command under the robot's lease, which every tool command but a stop needs.
+        gripped: `gripped(what, command, **details)` runs a command moving the fingers: leased, and recorded during an
+            assembly.
 
     Returns:
         tuple[viser.GuiHtmlHandle, viser.GuiHtmlHandle]: The tool's chip line and its numbers (`tool_status`).
@@ -331,11 +334,11 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
     gui.add_html(section("tool", SECTION_TOOL, TOOL_LABELS.get(kind, kind)))
     status = gui.add_html(""), gui.add_html("")
     tool = arm.end_effector
-    commands = tool_commands(tool, leased)
+    commands = tool_commands(tool, gripped)
     grip = gui.add_button_group("Grip", list(commands), hint=GRIP_HINTS.get(kind))
     grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
     if isinstance(tool, RobotiqGripper):
-        _build_robotiq_inputs(ctx, gui, label, tool, leased)
+        _build_robotiq_inputs(ctx, gui, label, tool, gripped)
     elif isinstance(tool, ScaffoldingV3):
         directions = {"Tighten": 1, "Loosen": -1, "Stop": 0}
         screw = gui.add_button_group("Screw", list(directions),
@@ -348,7 +351,7 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
 
 
 def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
-                           on_free_drive: Callable[[], None], leased: Callable[[Callable], object]
+                           on_free_drive: Callable[[], None], gripped: Callable[..., None]
                            ) -> viser.GuiHtmlHandle:
     """Add an arm's inputs on the phone: its status line, the gripper buttons, and free drive while held.
 
@@ -359,7 +362,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
         arm: The arm.
         on_free_drive: Called on the main thread at every report of the held free drive button; it switches to
             the free drive controller and keeps free drive on.
-        leased: Runs a command under the robot's lease, which the gripper's Open and Close need.
+        gripped: Runs the gripper's Open and Close: leased, and recorded during an assembly.
 
     Returns:
         viser.GuiHtmlHandle: The arm's status line.
@@ -367,7 +370,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
     status = gui.add_html("")
     tool = arm.end_effector
     if tool is not None:
-        commands = tool_commands(tool, leased)
+        commands = tool_commands(tool, gripped)
         grip = gui.add_button_group("Gripper", list(commands))
         grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
     free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,
@@ -378,7 +381,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
 
 
 def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gripper: RobotiqGripper,
-                          leased: Callable[[Callable], object]) -> None:
+                          gripped: Callable[..., None]) -> None:
     """Add the Robotiq-only inputs: a target opening with a force limit (Go only), and Reactivate.
 
     Args:
@@ -386,7 +389,7 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
         gui: The GUI api, inside the arm's tab.
         label: "<serial> <arm name>", for intent names.
         gripper: The gripper to command.
-        leased: Runs a command under the robot's lease.
+        gripped: Runs a command moving the fingers: leased, and recorded during an assembly.
     """
     position = gui.add_slider("pos rad", min=gripper.OPEN_POSITION, max=gripper.CLOSED_POSITION, step=0.01,
                               initial_value=gripper.OPEN_POSITION,
@@ -394,12 +397,12 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
     force = gui.add_slider("force", min=0.0, max=gripper.MAX_EFFORT, step=0.05, initial_value=gripper.DEFAULT_EFFORT,
                            hint="Force limit, as a fraction of the gripper's full force.")
     target = gui.add_button_group("Target", ["Go"], hint="Move the fingers to the slider position.")
-    target.on_click(ctx.defer(f"gripper target {label}",
-                              lambda: leased(lambda: gripper.move(position.value, force.value))))
+    target.on_click(ctx.defer(f"gripper target {label}", lambda: gripped(
+        "go", lambda: gripper.move(position.value, force.value), target=position.value, force=force.value)))
     driver = gui.add_button_group("Driver", ["Reactivate"],
                                   hint="After a fault or power loss. The gripper opens and closes once: "
                                        "hold nothing in it.")
-    driver.on_click(ctx.defer(f"reactivate gripper {label}", lambda: leased(gripper.reactivate)))
+    driver.on_click(ctx.defer(f"reactivate gripper {label}", lambda: gripped("reactivate", gripper.reactivate)))
 
 
 # --- --- --- --- --- READING THE SLIDERS --- --- --- --- ---

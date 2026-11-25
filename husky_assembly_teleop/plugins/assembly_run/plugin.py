@@ -35,11 +35,12 @@ from scaffolding_assembly_core.geometry import Pose
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...shared.assembly_run_contract import RunView, first_pending, is_live
+from ...shared.assembly_run_contract import RunView, current_ids, first_pending, is_live
 from ...shared.assembly_planning.movement import mating_drives
 from ...shared.assembly_planning.process_steps import LoadedProcess, loaded_process
 from ...shared.movement_exec_contract import current_step
 from ...shared.process_contract import MARK_ASSUMED, MARK_DONE, MARK_PENDING
+from ...shared.runs.faults import FaultWatch
 from ...shared.runs.runs import (DONE, PENDING, ActionRecord, RobotRecord, Run, RunError, RunSettings, continue_run,
                                  file_hashes, find_runs, made_after, record_event, reopen, save_progress, with_current)
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB
@@ -124,6 +125,9 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         self._press = SecondPress(seconds=None)
         #: When the current followed from the process panel was last changed without writing it; None: written.
         self._unsaved_at: float | None = None
+        #: What the robots showed at the last update (a stop or a gripper failure since is recorded), in which run.
+        self._faults = FaultWatch()
+        self._faults_of: Path | None = None
         #: The view's revision whose marks the process panel was last given.
         self._marks_revision = -1
         #: One line of feedback, whether it is a failure, and the last write that failed.
@@ -309,6 +313,7 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
             return
         if source is None:
             return
+        self._record_faults(ctx)
         if self._auto_from is not None and selection.index != self._auto_from:
             self._stop_auto()
             ctx.log_info("a step was picked in the process panel: the first pending action is not selected")
@@ -385,6 +390,17 @@ class AssemblyRunPlugin(RunWrites, HuskyPlugin):
         elif self._run is not None and shown != kept and not self._step_running(self._ctx):
             self._grasp_offsets_seen = kept
             process.request_grasp_offsets(kept)
+
+    def _record_faults(self, ctx: PluginContext) -> None:
+        """Record the stops and gripper failures since the last update, at the current step, once the run has begun."""
+        folder = None if self._run is None else self._run.folder
+        if folder != self._faults_of:  # * so every run says which robots are stopped as it begins or continues
+            self._faults, self._faults_of = FaultWatch(), folder
+        if folder is None:
+            return
+        for event, data in self._faults.changes(ctx.world.robots):
+            action, movement = current_ids(self.view)
+            self.request_record(event, action=action, movement=movement, data=data)
 
     def draw(self, ctx: PluginContext) -> None:
         """Fill the panel."""

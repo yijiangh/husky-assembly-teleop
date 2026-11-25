@@ -32,6 +32,9 @@ class HuskyPlugin:
     #: Plugins to set up before this one; reach them through `ctx.require`.
     requires: tuple[str, ...] = ()
 
+    #: Plugins it reaches through `ctx.require` if they are loaded, without loading them: else that raises KeyError.
+    uses: tuple[str, ...] = ()
+
     #: Whether its design is still open; loading it logs a warning.
     experimental: bool = False
 

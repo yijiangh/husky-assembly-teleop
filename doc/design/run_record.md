@@ -83,8 +83,16 @@ One JSON object per line, appended and flushed at once (a line cut by a crash is
 
 The events: `session` (a monitor opened the run, new or continued), `settings` (a run setting changed, with the
 changes), `mark_done` / `reopen`, and per part
-`prompt`, `confirm`, `cancel`, `soft_stop`, `error`, `exec` (with the record file it wrote), `servo`, and the planning
-events `plan`, `check_goal` and `check_tool0` with their numbers. Reading the lines in order replays the lab session.
+`prompt`, `confirm`, `cancel`, `soft_stop`, `error`, `exec` (with the record file it wrote), `servo`, the planning
+events `plan`, `check_goal` and `check_tool0` with their numbers, and `manual_grip`: a gripper moved by hand at the run's
+current step, refused or not, `source` saying which buttons: `exec` (the Exec panel's Open and Close, on their second
+press: the fingers before and after, how it ended, an `as_built` of phase `manual` either side) or `control` (the
+Control tab's Open, Close, Go and Reactivate: the fingers before, sent or refused; how it ended is not known). Once the
+run has begun it also records by itself, each at the run's current step and with its robot's serial: `safety_mode` (an
+arm's change to a stop or back to normal, and from which mode; a stop already there when the run begins or continues),
+`base_estop` (the platform's engaged or released) and `gripper_failed` (a command refused or failed; a dead gripper link
+is only in the driver's log, which `scripts/incident_report.py` reads from the robots' panes). None of them, nor a
+gripper press, begins a run. Reading the lines in order replays the lab session.
 
 ### movements/<action>/<movement>.<n>.json
 

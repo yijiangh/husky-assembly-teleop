@@ -190,6 +190,26 @@ def test_a_cancel_stops_the_fingers_and_holds_the_arm_without_switching():
     assert lab.arm.controllers.switches == [COMPLIANCE]
 
 
+@pytest.mark.safety
+@pytest.mark.parametrize("grasp", [GraspSettings(), GraspSettings(JOINT_GRASP)])
+@pytest.mark.parametrize("fingers", ["closed", "told to close", "silent", "reactivating"])
+def test_fingers_not_known_open_are_refused_before_the_zero(fingers, grasp):
+    """A bar may be in them: REFUSED, no zero, no switch, no goal, under either grasp controller."""
+    lab = Lab()
+    if fingers == "closed":
+        lab.gripper.state.position = 0.667
+    elif fingers == "told to close":
+        lab.gripper.state.commanded_position = 0.8
+    elif fingers == "silent":
+        lab.drivers[1].reports = False
+        lab.gripper.state.last_update_time = lab.ctx.t - 1.5
+    else:
+        lab.gripper.state.reactivating = True
+    outcome = lab.run(grasp=grasp)
+    assert outcome.status == REFUSED and lab.arm._zero_ft.calls == []
+    assert lab.sent("goal") == [] and lab.arm.controllers.switches == []
+
+
 def test_a_refused_switch_to_compliance_closes_nothing():
     """The controller manager rejects the switch: FAILED, no target, no close goal."""
     lab = Lab()

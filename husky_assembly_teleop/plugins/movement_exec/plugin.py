@@ -26,25 +26,31 @@ from scaffolding_assembly_core.ids import robot_id
 from ...config import short_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
+from ...robot_interface.end_effectors import RobotiqGripper
 from ...robot_interface.robot_lease import NotLeased
+from ...shared.assembly_run_contract import EXEC_GRIP, record_manual_grip
 from ...shared.assembly_planning.movement import Routine
 from ...shared.assembly_planning.route_result import pose_error
 from ...shared.execution.basis import STALE_BASE
 from ...shared.execution.force_sensors import zero_force_sensors, zero_refusal
-from ...shared.execution.moving import moving_reason
+from ...shared.execution.handoff import JOINT, GraspSettings, fingers_not_open, run_handoff
+from ...shared.execution.moving import moving_reason, robot_moving
 from ...shared.execution.operator import PromptBox
 from ...shared.execution.send import INTERRUPTED, motion_command
+from ...shared.execution.stream import DRY_RUN as PART_DRY
+from ...shared.execution.tools import DRY_RUN as TOOL_DRY, ROBOTIQ_OPEN, robotiq_move
 from ...shared.movement_exec_contract import (CANCELLED, DONE, DRY_RUN, FAILED, HAND_KINDS, HANDOFF_PART, HOLD_NOT_SENT,
                                               INSERT_PART, MAX_TRAJ_TIME, MOTION_KINDS, MOTION_PART, REFUSED,
                                               REFUSED_PART, RETREAT_PART, SERVO_INDEX, SERVO_PART, WITH_MOTION_PART,
                                               Carried, ExecRequest, ExecResult, serial_of)
 from ...shared.assembly_tab.layout import ASSEMBLY_TAB, EXEC_PLOTS_X, plots_window
+from ...ui.second_press import SecondPress
 from ...shared.runs.as_built import KIND as AS_BUILT_KIND, bar_lines
 from ...shared.runs.finished import EXEC_EVENT, FORGET_EVENT, ZERO_EVENT, finished_moves, zeroed_actions
 from .as_built import as_built_record
-from .panel import ExecPanel
+from .panel import CLOSE_GRIP, ExecPanel, grip_key
 from .plots import ExecPlots
-from .sequences import InsertEnd, Job, PartRun, run_part, unknown_serials
+from .sequences import InsertEnd, Job, PartRun, grasp_settings, run_part, unknown_serials
 from .servo_part import run_servo
 
 if TYPE_CHECKING:
@@ -96,6 +102,9 @@ class MovementExecPlugin(HuskyPlugin):
         self._last, self._last_failed, self._hold_lost = "", False, False
         self._step: tuple[str, int] | None = None
         self._dry_run_refused = 0
+        #: A gripper button's first press, waiting for its second, and the grasp settings its question named.
+        self._grip_press = SecondPress()
+        self._grip_asked: GraspSettings | None = None
         #: Serial -> ROS time its arms last arrived (a motion or a servo pass): an older plan is refused.
         self._moved_at: dict[str, float] = {}
         #: Serial -> {at, reason} of its force sensors' last zero, for the as-built records of later requests.
@@ -242,7 +251,8 @@ class MovementExecPlugin(HuskyPlugin):
             self._last, self._last_failed = why, True
 
     def request_cancel(self) -> None:
-        """Cancel the open prompt, else the running request (every arm is held)."""
+        """Cancel the open prompt, else the running request (every arm is held); a gripper button stops waiting."""
+        self._grip_press.forget()
         if self._prompts.current is not None:
             self._prompts.answer(False, self._ctx.now())
             self._ctx.log_warn("Cancel: the prompt is answered Cancel")
@@ -322,6 +332,53 @@ class MovementExecPlugin(HuskyPlugin):
         if not future.done():
             future.set_result(why)
 
+    def request_manual_grip(self, serial: str, arm: str, grip: str) -> None:
+        """On a second press, open a Robotiq, or close it as a step's grasp does (the run's grasp settings).
+
+        Recorded in the run.
+
+        A refusal is recorded too, on its first press. ! Main thread.
+        """
+        ctx = self._ctx
+        label = f"manual {grip} {short_serial(serial)} {arm}"
+        view = ctx.require("assembly_run").view
+        if view.process is None or view.folder is None:
+            self._grip_press.forget()
+            self._grip_said(ctx, label, "no run has begun, so nothing could record it; nothing sent (the Control tab "
+                                        "moves it unrecorded)", True)
+            return
+        refusal = self._grip_refusal(ctx, serial, arm, grip)
+        # * The question names the grasp settings: others at the second press ask again.
+        grasp = grasp_settings(view.settings) if grip == CLOSE_GRIP else None
+        if refusal or grasp != self._grip_asked:
+            self._grip_press.forget()
+        if not refusal:
+            if not self._grip_press.press(ctx.now(), grip_key(serial, arm, grip)):
+                self._grip_asked = grasp
+                if not self._hold_lost:
+                    self._last = f"{label}{_grasp_words(grasp)}? Press it again within {self._grip_press.seconds:g} s"
+                    self._last_failed = False
+                return
+            try:
+                lease = ctx.take_lease(ctx.world.robots, label, moves=[serial])
+            except NotLeased as refused:
+                refusal = f"busy: {refused}"
+        if refusal:
+            self._grip_said(ctx, label, f"{REFUSED}: {refusal}", True)
+            self._grip_record(ctx, serial, arm, grip, {"status": REFUSED, "reason": refusal})
+            return
+        try:
+            # * No step's job: As-built and the live line must not read the last step's.
+            self._job, self._active, self._cancel_reason = None, label, ""
+            self._last, self._last_failed, self._hold_lost = "", False, False
+            self._task = ctx.spawn(label, self._manual_grip(ctx, serial, arm, grip, grasp, label, lease))
+        except BaseException:
+            lease.release()
+            self._active = ""
+            raise
+        # * A safety net for a task cancelled before it started: its own `finally` never ran.
+        self._task.add_done_callback(lambda _task: lease.release())
+
     # --- --- --- --- --- HOOKS --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
@@ -373,7 +430,8 @@ class MovementExecPlugin(HuskyPlugin):
         if self._panel is not None:
             recorder = self._job.recorder if self.active and self._job is not None else None
             self._panel.draw(self.active, self.prompt, self._dry_run, (self._last, self._last_failed),
-                             self._dry_run_refused, recorder, self._servo_line)
+                             self._dry_run_refused, recorder, self._servo_line,
+                             self._grip_press.waiting(ctx.now()))
             if self._plots is not None:
                 if recorder is not None and recorder.samples and recorder.samples[-1]["t"] != self._plotted_t:
                     self._plotted_t = recorder.samples[-1]["t"]
@@ -606,6 +664,65 @@ class MovementExecPlugin(HuskyPlugin):
         else:
             (ctx.log_warn if self._last_failed else ctx.log_info)(f"Exec {self._last}")
 
+    # --- --- --- --- --- A GRIPPER BUTTON --- --- --- --- ---
+
+    def _grip_refusal(self, ctx: PluginContext, serial: str, arm: str, grip: str) -> str:
+        """Why a gripper button may not run now; "" if it may."""
+        if self.active:
+            return f"busy: {self._active} runs"
+        robot = ctx.world.robots.get(serial)
+        gripper = robot.arms[arm].end_effector if robot is not None and arm in robot.arms else None
+        if not isinstance(gripper, RobotiqGripper):
+            return f"{short_serial(serial)} {arm} is not connected, or has no Robotiq"
+        if robot.soft_stopped:
+            return f"{short_serial(serial)} is soft stopped; press Resume first"
+        # * The gripper's own robot too when it is parked, which `moving_reason` leaves out.
+        moving = moving_reason(ctx.world, ctx.now()) or robot_moving(serial, robot, ctx.now())
+        if moving:
+            return f"busy: {moving}"
+        return fingers_not_open(gripper, ctx.now()) if grip == CLOSE_GRIP else ""
+
+    async def _manual_grip(self, ctx: PluginContext, serial: str, arm: str, grip: str, grasp: GraspSettings | None,
+                           label: str, lease: Lease) -> None:
+        """Run a gripper button under `lease`: as-built before and after, an event however it ends."""
+        robot = ctx.world.robots[serial]
+        gripper, dry_run = robot.arms[arm].end_effector, self._dry_run
+        started, before = ctx.now(), gripper.state.position
+        status, reason, detail, ok = FAILED, "ended by an error: see the log", {}, False
+        try:
+            if not dry_run:
+                self.request_as_built(serial)
+            with lease.use():
+                if grasp is not None:
+                    outcome = await run_handoff(ctx, robot, arm, gripper, grasp=grasp, dry_run=dry_run)
+                    detail = {key: value for key, value in outcome.record.items() if key != "stream"}
+                else:
+                    outcome = await robotiq_move(ctx, gripper, ROBOTIQ_OPEN, dry_run=dry_run)
+                    detail = outcome.detail
+            status, reason, ok = outcome.status, outcome.reason, outcome.ok or outcome.status in (TOOL_DRY, PART_DRY)
+        except asyncio.CancelledError:
+            status, reason = CANCELLED, f"cancelled by {self._cancel_reason or cancelled_by(ctx)}"
+            raise
+        finally:
+            lease.release()
+            self._grip_said(ctx, label, f"{status}: {reason}", not ok)
+            self._grip_record(ctx, serial, arm, grip, {
+                "status": status, "reason": reason, "started": started, "seconds": ctx.now() - started,
+                "before": before, "after": gripper.state.position, "dry_run": dry_run, "detail": detail})
+            if not dry_run:
+                self.request_as_built(serial)
+
+    def _grip_said(self, ctx: PluginContext, label: str, text: str, failed: bool) -> None:
+        """Log how a gripper button ended and show it on the panel; never over a HOLD NOT SENT."""
+        (ctx.log_warn if failed else ctx.log_info)(f"Exec {label}: {text}")
+        if not self._hold_lost:
+            self._last, self._last_failed = f"{label}: {text}", failed
+
+    @staticmethod
+    def _grip_record(ctx: PluginContext, serial: str, arm: str, grip: str, data: Mapping[str, Any]) -> None:
+        """Record a gripper button in the run, at the run's current step."""
+        record_manual_grip(ctx.require("assembly_run"), EXEC_GRIP, serial, arm, grip, data)
+
     # --- --- --- --- --- RECORDS --- --- --- --- ---
 
     def _event(self, job: Job, name: str, movement: str, data: Mapping[str, Any]) -> None:
@@ -651,8 +768,12 @@ class MovementExecPlugin(HuskyPlugin):
 
     # --- --- --- --- --- THE AS-BUILT RECORD --- --- --- --- ---
 
-    def request_as_built(self) -> None:
-        """Measure every MoCap bar now and append an as-built record (phase "manual"); the current step's context."""
+    def request_as_built(self, serial: str | None = None) -> None:
+        """Measure every MoCap bar now and append an as-built record (phase "manual"); the current step's context.
+
+        Args:
+            serial: The robot it is about; None: the current action's.
+        """
         ctx = self._ctx
         view = ctx.require("assembly_run").view
         if view.process is None:
@@ -663,7 +784,8 @@ class MovementExecPlugin(HuskyPlugin):
             self._as_built(job, None, "manual")
             return
         action_id, movement_index = view.current if view.current is not None else (None, None)
-        serial = serial_of(view.process, action_id, ctx.config.robots) if action_id else None
+        if serial is None and action_id:
+            serial = serial_of(view.process, action_id, ctx.config.robots)
         if serial is None or serial not in ctx.world.robots:
             serial = next(iter(ctx.world.robots), None)
         if serial is None:
@@ -716,6 +838,15 @@ class MovementExecPlugin(HuskyPlugin):
                 file=record, kind=AS_BUILT_KIND)
         except Exception as error:
             ctx.log_error(f"[as-built] {phase} of {movement} NOT recorded: {error!r}")
+
+
+def _grasp_words(grasp: GraspSettings | None) -> str:
+    """The grasp settings a gripper's Close is asked with, e.g. " (arm compliant, 1500 N/m)"; "" for an Open."""
+    if grasp is None:
+        return ""
+    if grasp.controller == JOINT:
+        return " (arm STIFF, joint control)"
+    return " (arm compliant)" if grasp.stiffness is None else f" (arm compliant, {grasp.stiffness:g} N/m)"
 
 
 def _pose_record(pose: Pose | None) -> list[float] | None:

@@ -179,14 +179,14 @@ class PluginContext:
         return self._monitor.console_log
 
     def require(self, name: str) -> HuskyPlugin:
-        """Get a plugin this one declared in `requires`. Undeclared ones do not resolve.
+        """Get a plugin this one declared in `requires` or `uses`. Undeclared ones do not resolve.
 
         Raises:
-            KeyError: If `name` was not declared in `requires`, or is not loaded.
+            KeyError: If `name` was not declared in `requires` or `uses`, or is not loaded.
         """
         if name not in self._dependencies:
-            raise KeyError(f"plugin {self.name!r} did not declare a dependency on {name!r}; "
-                           f"add it to `requires`")
+            raise KeyError(f"plugin {self.name!r} did not declare {name!r} in `requires` or `uses`; "
+                           f"add it there")
         return self._monitor.plugin(name)
 
     def track_object(self, name: str, mocap_id: int, geometry: Geometry | None = None,

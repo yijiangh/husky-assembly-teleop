@@ -43,7 +43,11 @@ _NAME = re.compile(r"\b(alice|belle|cindy)\b", re.IGNORECASE)
 _EXEC_ON = re.compile(r"\bExec (\S+) on (\w+) \(a200-(\d{4})\)")
 _NUMBER = re.compile(r"\d+(\.\d+)?")
 #: A chip's change that is a stop of the arm itself, not one of its other states.
-_ESTOP_CHIP = re.compile(r"\[health/chips\] .*\barm (?:ROBOT |SYSTEM |SAFEGUARD |PROTECTIVE )\w*(?: STOP)? \w+ -> red")
+_ESTOP_CHIP = re.compile(r"\[health/chips\] .*\b(?:arm (?:ROBOT |SYSTEM |SAFEGUARD |PROTECTIVE )\w*(?: STOP)?|"
+                         r"base: ESTOP) \w+ -> red")
+#: A robot pane's lines: an arm's safety mode changed; the robot's launch started (again).
+_SAFETY_CHANGED = re.compile(r"(\w+): safety mode changed: (\w+)")
+_LAUNCH_STARTED = re.compile(r"\[launch\]: All log files can be found below")
 
 #: (kind, what the line must say), the first match counts; lines of `[health/chips]` and `[ticks]` never get here.
 _MONITOR_RULES = (
@@ -110,6 +114,8 @@ class Incident:
     inferred: str = ""
     #: How many lines in the middle of a long burst were left out of `raw`.
     dropped: int = 0
+    #: Never merges into the burst before it: an E-stop after the last one ended, however soon.
+    starts_anew: bool = False
 
     @property
     def day(self) -> str:
@@ -215,18 +221,36 @@ def pane_incidents(lines: Sequence[LogLine], robot: str) -> list[Incident]:
     """Every line of a robot's pane that is an incident, one incident per line, unmerged.
 
     A connection the pane's own `shutdown` closed is left out. A line with no stamp of its own says so, as its time is
-    only the last stamp before it.
+    only the last stamp before it. An E-stop ends once every stopped arm is back to normal, and the next one is its own
+    incident; one whose end was not seen before the robot's launch started again keeps its start as its end.
     """
     found, shutdown_at = [], -10
+    #: The last E-stop line's incident, the arms stopped now, and whether that stop has ended.
+    stopped, arms, released = None, set(), False
     for number, line in enumerate(lines):
         if "shutdown now" in line.text or "sudo reboot" in line.text:
             shutdown_at = number
+        if _LAUNCH_STARTED.search(line.raw):
+            stopped, arms, released = None, set(), False
+        changed = _SAFETY_CHANGED.search(line.text)
+        if changed is not None and changed.group(2) == "NORMAL":
+            arms.discard(changed.group(1))
+            if stopped is not None and not released:
+                stopped.raw, released = [*stopped.raw, line.raw], not arms
+                if released:
+                    stopped.end = line.t
+            continue
         kind = classify_pane(line)
         if kind is None or (kind == "no_answer" and "closed by remote host" in line.text
                             and number - shutdown_at < 5):
             continue
         found.append(Incident(kind, robot, _what(line.text), line.t, line.t, raw=[line.raw], source=line.source,
-                              inferred="" if line.stamped else "time: the last stamp before this line"))
+                              inferred="" if line.stamped else "time: the last stamp before this line",
+                              starts_anew=kind == "estop" and released))
+        if kind == "estop":
+            stopped, released = found[-1], False
+            if changed is not None:
+                arms.add(changed.group(1))
     return found
 
 
@@ -297,7 +321,7 @@ def _ended(kind: str, lines: Sequence[LogLine], what: str, inferred: str = "") -
 
 
 def events_incidents(events: Iterable[Mapping], run: str) -> list[Incident]:
-    """What a run's `events.jsonl` says went wrong: steps, servos, Stop all, goals with no solution.
+    """What a run's `events.jsonl` says went wrong: steps, servos, Stop all, goals with no solution, stops, grippers.
 
     Args:
         events: The run's events, oldest first.
@@ -319,8 +343,14 @@ def events_incidents(events: Iterable[Mapping], run: str) -> list[Incident]:
             hit = ("plan", f"Check goal {movement}: {data.get('reason') or 'no goal'}")
         elif name == "soft_stop":
             hit = ("stop_all", f"Soft stop during {movement or 'a run'}")
+        elif name == "safety_mode" and data.get("mode") not in ("normal", "reduced"):
+            hit = ("estop", f"{data.get('arm')}: safety mode {data.get('mode')}, during {movement or 'a run'}")
+        elif name == "base_estop" and data.get("engaged"):
+            hit = ("estop", f"Platform emergency stop engaged, during {movement or 'a run'}")
+        elif name == "gripper_failed":
+            hit = ("gripper", f"{data.get('arm')}: {data.get('failure')}, during {movement or 'a run'}")
         if hit is not None:
-            robot = ALL_ROBOTS if hit[0] == "stop_all" else acting
+            robot = ALL_ROBOTS if hit[0] == "stop_all" else robot_in(str(data.get("serial"))) or acting
             found.append(Incident(hit[0], robot, hit[1], when, when, raw=[json.dumps(event)[:400]],
                                   source=f"{run}/events.jsonl"))
     return found
@@ -337,7 +367,7 @@ def merge_bursts(incidents: Iterable[Incident], gap_s: float = BURST_GAP_S) -> l
         words = "" if item.kind in MERGE_ANY_WORDS else _NUMBER.sub("N", item.what)
         key = (item.kind, item.robot, words)
         burst = open_bursts.get(key)
-        if burst is not None and item.start - burst.end <= gap_s:
+        if burst is not None and not item.starts_anew and item.start - burst.end <= gap_s:
             burst.end = max(burst.end, item.end)
             burst.count += item.count
             burst.raw = [*burst.raw, *item.raw]
@@ -360,13 +390,14 @@ def _trim(burst: Incident) -> None:
 def add_events(incidents: list[Incident], from_events: Iterable[Incident], gap_s: float = 30.0) -> list[Incident]:
     """Add what the runs' events say: to the log's incident of that kind near that time, else as a new incident.
 
-    A servo's end also joins a step's incident: the step's line already says how its servo ended.
+    A servo's end also joins a step's incident: the step's line already says how its servo ended. An E-stop or a
+    gripper's failure joins only its own robot's.
     """
     out = list(incidents)
     for item in from_events:
         kinds = ("servo", "step") if item.kind == "servo" else (item.kind,)
         same = next((each for each in out if each.kind in kinds and each.start - gap_s <= item.start
-                     <= each.end + gap_s), None)
+                     <= each.end + gap_s and (item.kind not in ("estop", "gripper") or each.robot == item.robot)), None)
         if same is not None:
             same.raw = [*same.raw, *item.raw]
         else:

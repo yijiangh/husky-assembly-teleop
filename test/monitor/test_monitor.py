@@ -178,6 +178,20 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     return monitor
 
 
+def test_a_plugin_reaches_what_it_uses_only_when_that_is_loaded(monkeypatch):
+    """`uses` resolves like `requires` when the other is loaded, else raises KeyError; undeclared never resolves."""
+    calls = []
+    other, plugin = Recorder("other", calls), Recorder("user", calls)
+    plugin.uses = ("other", "absent")
+    monitor = build(monkeypatch, other, plugin)
+    ctx = monitor._loaded["user"].ctx
+    assert ctx.require("other") is other
+    with pytest.raises(KeyError, match="not loaded"):
+        ctx.require("absent")
+    with pytest.raises(KeyError, match="did not declare"):
+        monitor._loaded["other"].ctx.require("user")
+
+
 def ticks(monitor: HuskyMonitor, count: int = 1) -> None:
     """Run `count` ticks."""
     async def run():

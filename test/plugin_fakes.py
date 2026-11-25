@@ -881,21 +881,25 @@ def fake_robotiq(node: SimpleNamespace, namespace: str = "/a200_0804/gripper", p
 class RobotiqDriver:
     """Accepts a fake Robotiq's goals at once and ends them `delay` s after they are sent, its fingers at `reach(target)`.
 
-    A cancelled goal ends cancelled at the next tick, the fingers where they are.
+    A cancelled goal ends cancelled at the next tick, the fingers where they are. The fingers report every tick.
 
     Attributes:
         answer: False: never answers (the action server hangs).
+        reports: False: the joint states stopped coming, the last angle stays.
     """
 
     def __init__(self, gripper: RobotiqGripper, delay: float = 0.5, reach: Callable[[float], float] = lambda t: t,
                  answer: bool = True):
         """Answer `gripper`'s goals."""
         self.gripper, self.delay, self.reach, self.answer = gripper, delay, reach, answer
+        self.reports = True
         self._sent_at: dict[int, float] = {}
         self._ended: set[int] = set()
 
     def tick(self, t: float) -> None:
-        """Accept new goals, then end the goals that were cancelled or whose time has come, in order."""
+        """Report, accept new goals, then end the goals that were cancelled or whose time has come, in order."""
+        if self.reports:
+            self.gripper.state.last_update_time = t
         if not self.answer:
             return
         for index, goal in enumerate(self.gripper._action.goals):
