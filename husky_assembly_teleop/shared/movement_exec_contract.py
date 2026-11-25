@@ -227,6 +227,12 @@ class MovementExecContract(Protocol):
         run: a part run from the Assembly tab counts for every other requester too.
         """
 
+    def zeroed(self, action: str) -> bool:
+        """Whether a Zero force (`request_zero_force`) was made for `action` in this run; kept over a restart.
+
+        ! Ask before another one: the bar may be in the tools by now. Redoing the action keeps it.
+        """
+
     def request_forget(self, action: str, done: Collection[tuple[int, int]] | None = None) -> None:
         """Forget that `action`'s movements (only the (primary, index) pairs in `done`, if given) were finished."""
 

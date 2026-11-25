@@ -6,6 +6,8 @@ index) keys; a `forget` event (the executor forgetting, on Redo from here or a r
 names, or the whole action. Records are never moved or changed: an abandoned one stays where it is, only later in the
 log than the forget that outdates it.
 
+`zeroed_actions` reads the operator's Zero force presses back the same way.
+
 - ! Reads files: call it on a worker thread.
 """
 
@@ -21,6 +23,8 @@ from .runs import read_events
 FINISHED = "done"
 #: The executor's events: a part ended (its record named in `file`), and what it forgot.
 EXEC_EVENT, FORGET_EVENT = "exec", "forget"
+#: The run's event for each operator's Zero force (the Assembly tab's, the guide's).
+ZERO_EVENT = "force sensors zeroed"
 
 
 def finished_moves(folder: Path, log: Callable[[str], None] | None = None) -> dict[str, set[tuple[int, int]]]:
@@ -47,6 +51,18 @@ def finished_moves(folder: Path, log: Callable[[str], None] | None = None) -> di
             elif action in found:
                 found[action].difference_update(_pairs(done))
     return {action: keys for action, keys in found.items() if keys}
+
+
+def zeroed_actions(folder: Path, log: Callable[[str], None] | None = None) -> set[str]:
+    """The actions an operator's Zero force was made for in the run at `folder`.
+
+    Args:
+        folder: The run's folder.
+        log: Told about lines of the log it cannot read.
+    """
+    return {event["action"] for event in read_events(folder, log)
+            if event.get("event") == ZERO_EVENT and event.get("action")
+            and any(arm.get("sent") for arm in ((event.get("data") or {}).get("arms") or {}).values())}
 
 
 def _keys(folder: Path, event: dict, data: dict) -> set[tuple[int, int]]:

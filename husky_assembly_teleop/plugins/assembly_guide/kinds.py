@@ -57,6 +57,9 @@ ZERO_ASK = ("Only with NO bar in the tools: zeroing tares away whatever they hol
 #: What it asks once the part says the bar is in the tools: the press still counts, the operator knows best.
 ZERO_ASK_HELD = ("The bar looks clamped already (a box is ticked or the part is done): zeroing now tares its weight "
                  "away. Press again to zero anyway.")
+#: What it asks once the sensors were zeroed for the action: a second zero mostly comes with the bar mounted by now.
+ZERO_ASK_AGAIN = ("The force sensors were zeroed for this action already: with the bar mounted since, zeroing again "
+                  "tares its weight away. Press again to zero anyway.")
 
 
 def description(kind: Kind, part: GuidePart | None = None) -> str:
@@ -266,7 +269,8 @@ class HandKind(Kind):
             "Done: the executor records it, the next part follows.")
     #: The bar placed in the tools and clamped.
     PLACE_GOAL = "Place the bar in the tools and clamp it, by hand."
-    PLACE_TODO = (f"Prepare (or {ZERO}, twice), while the tools are still empty: zeroes the arms' force sensors.",
+    PLACE_TODO = (f"Prepare (or {ZERO}, twice), while the tools are still empty: zeroes the arms' force sensors; "
+                  f"again only on a second press.",
                   "Put the bar into both tools' jaws.",
                   "Tighten each gripper screw with the tool's own buttons until it stalls, one button at a time (B1 "
                   "and B2 together put the arm in free drive).",
@@ -338,7 +342,7 @@ class HandKind(Kind):
             return
         held = self.looks_held(ctx, part)
         if not self._zero_press.press(ctx.now(), self._zero_key(serial, held)):
-            self.guide._refuse(ctx, ZERO, ZERO_ASK_HELD if held else ZERO_ASK, ask=True)
+            self.guide._refuse(ctx, ZERO, self.zero_asks(ctx, part) or ZERO_ASK, ask=True)
             return
         self.zero(ctx, "guide", ZERO)
 
@@ -371,6 +375,13 @@ class HandKind(Kind):
     def looks_held(self, ctx: PluginContext, part: GuidePart) -> bool:
         """Whether the part says the bar is in the tools already: a box ticked, or the part done."""
         return self.count[0] > 0 or self.guide.is_done(ctx, part, self.guide.index)
+
+    def zero_asks(self, ctx: PluginContext, part: GuidePart) -> str:
+        """Why one press of Prepare may not zero: the bar looks clamped, or it zeroed for the action already; or ""."""
+        if self.looks_held(ctx, part):
+            return ZERO_ASK_HELD
+        executor: MovementExecContract = ctx.require("movement_exec")
+        return ZERO_ASK_AGAIN if executor.zeroed(part.action) else ""
 
     def _zero_key(self, serial: str | None, held: bool) -> str:
         """What a first press of Zero force asked about: this part's robot, and whether the bar looked held."""

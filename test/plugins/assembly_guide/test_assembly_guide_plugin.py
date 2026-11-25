@@ -120,6 +120,10 @@ class Executor:
         """What was finished for `action`."""
         return frozenset(self.done.get(action, ()))
 
+    def zeroed(self, action):
+        """Whether a Zero force was made for `action`."""
+        return any(zero[2] == action for zero in self.zeroes)
+
     def request_forget(self, action, done=None):
         """Forget some or all of it."""
         self.forgot.append((action, frozenset(done or ())))
@@ -1866,5 +1870,35 @@ def test_a_first_zero_press_counts_only_for_the_part_and_robot_it_asked_about(mo
         hand = lab.guide.kinds[HAND]
         hand._press_zero(lab.ctx)
         assert hand._zero_press.key == f"zero {CINDY} {lab.guide.index} False"
+
+    asyncio.run(walk())
+
+
+def test_a_second_prepare_zero_for_the_action_asks_even_with_no_box_ticked(monkeypatch):
+    """The sensors zeroed once for the action (from either tab): Prepare only asks, the second press zeroes."""
+    lab = Guide(monkeypatch)
+
+    async def walk():
+        await to_the_bar_by_hand(lab)
+        guide, hand = lab.guide, lab.guide.kinds[HAND]
+        arms = list(lab.ctx.world.robots[CINDY].arms.values())
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 1 for arm in arms), "the first zero: one press"
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert hand.count[0] == 0 and all(len(arm._zero_ft.calls) == 1 for arm in arms), "the bar may be mounted by now"
+        assert "zeroed for this action already" in guide.refusal(lab.ctx.t).detail
+        assert guide._prepare.label.endswith("?")
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 2 for arm in arms)
+        lab.executor.zeroes[:] = [(CINDY, "assembly tab", "B20_J", "B20_J_place_bar", None)]
+        lab.ctx.t += 0.5
+        guide.prepare(lab.ctx)
+        await lab.ticks(10)
+        assert all(len(arm._zero_ft.calls) == 2 for arm in arms), "a zero from the Assembly tab counts too"
 
     asyncio.run(walk())

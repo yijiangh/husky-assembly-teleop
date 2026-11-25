@@ -21,8 +21,6 @@ if TYPE_CHECKING:
 
 #: Seconds the force sensors get after their zero, before the arms go compliant.
 FT_SETTLE = 0.5
-#: The run's event for each operator's Zero force (the Assembly tab's, the guide's).
-ZERO_EVENT = "force sensors zeroed"
 
 
 def force_magnitude(wrench: Sequence[float] | None) -> float | None:

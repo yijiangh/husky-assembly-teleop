@@ -12,6 +12,7 @@ import pytest
 from test_movement_exec import Lab, execute
 
 from husky_assembly_teleop.experiments.as_built.build import result_folder
+from husky_assembly_teleop.plugins.movement_exec.as_built import last_zero
 from husky_assembly_teleop.shared.bars.layouts import bar_layouts, fake_sensed_markers, fit_bar
 from husky_assembly_teleop.shared.bars.pose import bar_slide_roll
 from husky_assembly_teleop.shared.mocap_bars_contract import BarMeasurement
@@ -158,3 +159,16 @@ def test_the_as_built_page_is_written_to_the_days_result_folder():
     """The 3D page's path: `<drive>/.../<day>-asbuilt-result/`, the folder the server serves."""
     assert result_folder(Path("/drive"), "20261104") == Path(
         "/drive/data_experiment/bar_action_live_replan_exe/20261104-asbuilt-result")
+
+
+@pytest.mark.safety
+def test_the_loads_zero_is_the_last_one_whoever_made_it():
+    """The operator's Zero force is named until an arm is zeroed elsewhere after it."""
+    lab, _bars = lab_with_bars()
+    robot = lab.ctx.world.robots["a200-0806"]
+    kept = {"at": 5.0, "reason": "Zero force (guide)"}
+    assert last_zero(robot, None) is None and last_zero(robot, kept) == kept
+    robot.arms["left_ur_arm"].state.ft_zero_time = 4.5
+    assert last_zero(robot, kept) == kept, "its own"
+    robot.arms["right_ur_arm"].state.ft_zero_time = 9.0
+    assert last_zero(robot, kept)["at"] == 9.0 and "outside" in last_zero(robot, kept)["reason"]

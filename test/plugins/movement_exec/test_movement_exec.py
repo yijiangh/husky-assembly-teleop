@@ -31,7 +31,7 @@ from husky_assembly_teleop.robot_interface.end_effectors import ScaffoldingV3
 from husky_assembly_teleop.robot_interface.robot_lease import NotLeased
 from husky_assembly_teleop.robot_interface.soft_stop import STOP_ALL_REASON
 from husky_assembly_teleop.shared.execution.basis import basis_of
-from husky_assembly_teleop.shared.execution.force_sensors import ZERO_EVENT
+from husky_assembly_teleop.shared.runs.finished import ZERO_EVENT
 from husky_assembly_teleop.shared.runs.runs import record_event
 from husky_assembly_teleop.shared.execution.retreat import TAIL_STEP
 from husky_assembly_teleop.shared.execution.stream import arm_base_in_world
@@ -1769,3 +1769,36 @@ def test_a_stiff_retreat_whose_arms_moved_over_half_a_degree_since_the_plan_is_r
     assert lab.published() == 0
     for arm in lab.tools:
         assert commands(lab, arm) == []
+
+
+@pytest.mark.safety
+def test_a_zero_force_is_remembered_for_its_action_over_a_restart_and_dropped_by_a_new_run(tmp_path):
+    """From the press on; whoever asked; read back from the run's log; another run starts with none."""
+    lab = Lab(current=("B20_J", 1))
+    lab.run.view.folder = tmp_path / "runs" / "1"
+    lab.run.view.folder.mkdir(parents=True)
+
+    async def scenario():
+        zeroing = lab.plugin.request_zero_force(CINDY, "assembly tab", "B20_J", "B20_J_place_bar")
+        pressed = lab.plugin.zeroed("B20_J")
+        await zeroing
+        return pressed
+
+    assert run_guarded(scenario()) and lab.plugin.zeroed("B20_J") and not lab.plugin.zeroed("B21_J")
+    lab.plugin.request_forget("B20_J")
+    assert lab.plugin.zeroed("B20_J"), "redone with the bar still in the tools: the next zero asks too"
+    record_event(lab.run.view.folder, ZERO_EVENT, 1.0, action="B22_J", data={"arms": {"left_ur_arm": {"sent": True}}})
+
+    async def replay():
+        fresh = MovementExecPlugin()
+        fresh.setup(lab.ctx)
+        fresh.update(lab.ctx)
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if fresh.zeroed("B22_J"):
+                return fresh
+        raise AssertionError("not read back")
+
+    run_guarded(replay())
+    lab.run.view.folder = tmp_path / "runs" / "2"
+    assert not lab.plugin.zeroed("B20_J")

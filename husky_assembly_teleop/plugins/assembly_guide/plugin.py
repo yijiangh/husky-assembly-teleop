@@ -10,7 +10,7 @@ The assembly guide: the process part by part, Prepare → Check → Go, each par
   Prepare drives even when the base stands within the arrival tolerance.
 - Prepare and Go are for parts that move a robot. A part by hand is confirmed by ticking its boxes and Done (the
   executor records it); Mark done is Done too. Prepare and Go stay grey there, but Prepare on placing the bar zeroes
-  the force sensors (an operator's press only: Auto and God never zero).
+  the force sensors (an operator's press only: Auto and God never zero; a second zero for an action asks first).
 - A part is done by its result: the executor's finished movements (`MovementExecContract.finished`, whoever sent
   them), the run's mark, a drive ended at its goal. A part fixed by hand one layer down (Plan › Base, Plan › Arm,
   Control) is at its end: Done goes on with one press; anything else asks twice (Skip).
@@ -84,7 +84,7 @@ from ...ui.style import (BUSY, CURRENT, FAIL, OK, SECTION_CTRL, block, check_chi
                          chip_row, note, section, warning)
 from ...world.arm_reach import out_of_reach
 from ...world.checks import BAD, GOOD, INFO, PENDING, WARN, Check
-from .kinds import KINDS, ZERO_ASK_HELD, HandKind, Kind, description
+from .kinds import KINDS, HandKind, Kind, description
 from .parts import (ARM_ARRIVED, DRIVE, EXECUTED, GRIPPER, HAND, INSERT, MARK, MOVE, NOTHING_TO_MOVE, PARK, REFUSED,
                     RETREAT, SERVO, GuidePart, arm_arrived, base_arrived, floor_pose, schedule_parts)
 
@@ -757,7 +757,8 @@ class AssemblyGuidePlugin(HuskyPlugin):
         """Get the part shown ready and ask Go; `rehearse`: its dry run (Mode Off only).
 
         Not for a part by Done, but placing the bar: there Prepare zeroes the force sensors, meant before the bar is in
-        the tools; once a box is ticked or the part is done it asks a second press. Auto and God never press it.
+        the tools; once the sensors were zeroed for the action, a box is ticked or the part is done, it asks a second
+        press. Auto and God never press it.
         """
         button = "Rehearse" if rehearse else "Prepare"
         if why := self._cannot(ctx, "Prepare"):
@@ -770,10 +771,10 @@ class AssemblyGuidePlugin(HuskyPlugin):
         if self._zeroes(part):
             if why := self._hand.zero_blocked(ctx):
                 self._refuse(ctx, button, why)
-            elif not self._hand.looks_held(ctx, part) or self._again_press.press(ctx.now(), str(self.index)):
+            elif not (asks := self._hand.zero_asks(ctx, part)) or self._again_press.press(ctx.now(), str(self.index)):
                 self._hand.zero(ctx, "guide Prepare", button)
             else:
-                self._refuse(ctx, button, ZERO_ASK_HELD, ask=True)
+                self._refuse(ctx, button, asks, ask=True)
             return
         if self.is_done(ctx, part, self.index):
             if not self._again_press.press(ctx.now(), str(self.index)):

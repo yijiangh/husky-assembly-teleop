@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from husky_assembly_teleop.shared.movement_exec_contract import DONE, DRY_RUN, FAILED
-from husky_assembly_teleop.shared.runs.finished import FINISHED, finished_moves
+from husky_assembly_teleop.shared.runs.finished import FINISHED, ZERO_EVENT, finished_moves, zeroed_actions
 from husky_assembly_teleop.shared.runs.runs import record_event
 
 
@@ -63,3 +63,16 @@ def test_no_log_and_a_lost_record_read_as_nothing(tmp_path):
     record_event(tmp_path, "exec", 1.0, action="B20_J", movement="B20_J_transfer", data={"result": DONE},
                  file="movements/B20_J/B20_J_transfer.9.json")
     assert finished_moves(tmp_path) == {}
+
+
+def test_the_actions_zeroed_for_are_read_back_a_zero_not_sent_is_not(tmp_path):
+    """An operator's zero that went out to an arm counts for its action, also after the action was reopened."""
+    def zeroed(action, sent: bool) -> None:
+        """A Zero force event."""
+        record_event(tmp_path, ZERO_EVENT, 1.0, action=action, data={"arms": {"left": {"sent": sent}}})
+
+    zeroed("B20_J", True)
+    zeroed("B21_J", False)
+    zeroed(None, True)
+    forgot(tmp_path, "B20_J", None)
+    assert zeroed_actions(tmp_path) == {"B20_J"}

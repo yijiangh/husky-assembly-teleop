@@ -127,7 +127,7 @@ def as_built_record(ctx: PluginContext, bars_plugin: MocapBarsContract, loaded: 
         "arms": {side: {**wrench, "wrench": robot.arms[arm].state.wrench,
                         "zeroed_at": robot.arms[arm].state.ft_zero_time}
                  for (side, wrench), arm in zip(wrenches.items(), arms)},
-        "zero": dict((ft_zero or {}).get(serial) or {}) or None}
+        "zero": last_zero(robot, (ft_zero or {}).get(serial))}
     robots = {live_id: {"name": _process_name(process, live_id.rsplit("/", 1)[-1]),
                         "serial": live_id.rsplit("/", 1)[-1], **asdict(live_record(each, stamp()))}
               for live_id, each in snapshot.robots.items() if is_live(each, ctx.now())}
@@ -215,3 +215,12 @@ def _options(request: ExecRequest | None, run: PartRun | None, view: RunView, dr
         "insert_stiffness_along": settings.insert_stiffness_along,
         "grasp_controller": grasp.get("controller", settings.grasp_controller),
         "grasp_stiffness": grasp.get("stiffness", settings.grasp_stiffness)}
+
+
+def last_zero(robot: HuskyRobotInterface, kept: Mapping | None) -> dict | None:
+    """The robot's last force zero, {at, reason}: the operator's `kept`, unless an arm was zeroed after it elsewhere."""
+    times = [arm.state.ft_zero_time for arm in robot.arms.values() if arm.state.ft_zero_time is not None]
+    latest = max(times, default=None)
+    if latest is not None and (kept is None or latest > kept["at"]):
+        return {"at": latest, "reason": "zeroed outside Zero force (a compliant part, or Control)"}
+    return dict(kept) if kept else None
