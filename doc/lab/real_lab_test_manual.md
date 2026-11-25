@@ -1280,7 +1280,7 @@ All in `scripts/real_lab/`, beside the fake lab's `scripts/fake_lab/`. Each says
 | `relay.sh` | the mocap relay against the Motive PC, with the Drive's calibrations |
 | `monitor.sh` | the monitor: the three robots, the labs' plugins (`lab_common.sh`), the process from the Drive; opens its page once started |
 | `check_robots.sh [robot ...]` | Part 3's read-only checks |
-| `../wifi_watch.py` | the Wi-Fi, in a terminal of its own (venv, no ROS): pings the router and the robots, plots live, pops up when one is slow; logs to `~/.ros/wifi_watch/` |
+| `../wifi_watch.py` | the Wi-Fi, in a terminal of its own (venv, no ROS; `sudo apt install python3-tk` once): pings the router and the robots, plots live, pops up when one is slow; logs to `~/.ros/wifi_watch/` |
 | `../lab_common.sh` | what both labs share, sourced by their scripts: the monitor's plugins, the clean environment each process starts in, the monitor's start line, the tmux panes |
 
 Settings: given to `tmux.sh` when it makes the session, they reach every pane (`REAL_LAB_MOTIVE=192.168.0.117

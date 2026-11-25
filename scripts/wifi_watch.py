@@ -4,10 +4,10 @@
     python src/husky-assembly-teleop/scripts/wifi_watch.py
     python src/husky-assembly-teleop/scripts/wifi_watch.py --limit 300 --minutes 5
 
-Needs a lab address on this PC, an ssh key on the robots and a screen; no ROS. Everything is kept in
-`~/.ros/wifi_watch/<YYYYMMDD>/<HHMMSS>/`: `ping.csv` (every ping; none while a host is off), `link.csv` (each robot's
-radio every 2 s: channel, signal, resends), `events.log` (slow spells, channel changes) and `plot.png` (the window,
-every minute and at the end).
+Needs a lab address on this PC, an ssh key on the robots, a screen and Tk (`sudo apt install python3-tk`); no ROS.
+Everything is kept in `~/.ros/wifi_watch/<YYYYMMDD>/<HHMMSS>/`: `ping.csv` (every ping; none while a host is off),
+`link.csv` (each robot's radio every 2 s: channel, signal, resends), `events.log` (slow spells, channel changes) and
+`plot.png` (the window, every minute and at the end).
 The robots are only read. The popup never takes the keyboard focus; a click closes it until the next slow spell.
 """
 
@@ -144,8 +144,10 @@ class Watch:
     def _lines(self, key: str, command: list[str]):
         """Yield the command's output lines, starting it again when it ends."""
         while not self._stopped:
+            # A session of its own: a Ctrl-C here would end the pings first, which then log as slow.
             process = self._processes[key] = subprocess.Popen(command, stdin=subprocess.DEVNULL, text=True,
-                                                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                                              start_new_session=True)
             yield from process.stdout
             time.sleep(RESTART_DELAY)
 
