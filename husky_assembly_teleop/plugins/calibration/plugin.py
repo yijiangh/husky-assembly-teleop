@@ -133,11 +133,16 @@ class CalibrationPlugin(HuskyPlugin):
     def switch_run(self, ctx: PluginContext, run: Run) -> None:
         """Make `run` the chosen one: track its tool body, and show it in every step; stay at Setup.
 
-        Another run of the same arm keeps the checklist's ticks: they are about the arm, not the run.
+        Another run of the same arm keeps the checklist's ticks: they are about the arm, not the run. Another arm starts
+        with Auto off and Clearance on.
         """
         previous = self.cal.run
         if previous is not None and (previous.serial, previous.arm) == (run.serial, run.arm):
             run.adopt_checklist(previous)
+        elif previous is not None:
+            # * Another arm: neither Auto nor an unticked Clearance was meant for it.
+            self.cal.procedure.auto = False
+            self.cal.procedure.clearance.value = True
         self.cal.run = run
         self.cal.track_tool(ctx, run.tool_body)
         self.cal.hits.clear(self.name)

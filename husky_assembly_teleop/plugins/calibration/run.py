@@ -269,6 +269,8 @@ class Run:
         self.marker_time: float | None = None
         self.marker_made: Made | None = None
         self.ticks: dict[str, float] = {}
+        #: When each box was unticked by the operator, by label (this session only): another run takes it over too.
+        self.unticked: dict[str, float] = {}
         self.tool_ticked_for: str | None = None
         self.drive_seconds = 0.0
         self.collisions: dict[int, str] = {}
@@ -637,13 +639,19 @@ class Run:
         """The operator ticked (or unticked) a box of Setup's checklist; Tool on flange for the tool model now."""
         if not ticked:
             self.ticks.pop(label, None)
+            self.unticked[label] = now
             return
         self.ticks[label] = now
+        self.unticked.pop(label, None)
         if label == TOOL_BOX:
             self.tool_ticked_for = self.tool_model
 
     def adopt_checklist(self, other: Run) -> None:
-        """Take another run's ticks where they are newer: they are about the arm, not the run."""
+        """Take another run's ticks, and its boxes unticked, where they are newer: they are about the arm."""
+        for label, at in other.unticked.items():
+            if at > self.ticks.get(label, math.inf):
+                del self.ticks[label]
+            self.unticked[label] = max(at, self.unticked.get(label, -math.inf))
         for label, at in other.ticks.items():
             if at > self.ticks.get(label, -math.inf):
                 self.ticks[label] = at

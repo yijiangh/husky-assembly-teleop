@@ -503,7 +503,7 @@ class GuidePanel:
         unfinished or expired (it asks once more, then labelled `done_label`), else green.
         """
         step, procedure = self.current, self.procedure
-        set_changed(self._auto, visible=step.auto)
+        set_changed(self._auto, visible=step.auto, value=procedure.auto)
         path = procedure.preview_path
         # * Go and Preview act for the step that started the procedure only: greyed on every other.
         elsewhere = bool(self._elsewhere())
