@@ -119,11 +119,15 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._robot_name = ""
         #: The workaround as last seen, to notice the operator toggling it.
         self._transfer: bool | None = None
+        #: The run's folder as last seen: another run starts its step clean, even the same one.
+        self._folder = None
         #: Seconds the motion should take, the operator's; the default per routine at each new step.
         self.traj_time = 10.0
         self.ignore_built = False
         #: Exec's Clearance box (`movement_exec`: a motion along the plan keeps a clearance while ticked).
         self.clearance = ClearanceToggle(EXEC_CLEARANCE_HINT)
+        #: The robot the Clearance box was last set for.
+        self._cleared_for: str | None = None
         #: Movement indices of the current step done by Exec; the action offered to Mark done after its last step.
         self._done: set[int] = set()
         self._offer: str | None = None
@@ -191,6 +195,9 @@ class AssemblyStepsPlugin(PlannerPlugin):
         """Take the run's current step; a new one starts clean. A toggled workaround moves to its step's primary."""
         view = self._assembly_run(ctx).view
         transfer = self._transfer_as_free(ctx)
+        # * A run's folder appears with its first record: from none to one is the same run.
+        another = self._folder is not None and view.folder != self._folder
+        self._folder = view.folder
         found = current_step(view, transfer)
         toggled, self._transfer = self._transfer is not None and transfer != self._transfer, transfer
         if found is None:
@@ -202,14 +209,15 @@ class AssemblyStepsPlugin(PlannerPlugin):
             # * The workaround regroups the action's movements: go to the primary of the step now holding this one.
             self._assembly_run(ctx).request_set_current(action, steps[index].primary)
         key = (view.process, action, steps[index].primary, transfer)
-        if not same_step(key, self._key):
+        if another or not same_step(key, self._key):
             self._steps, self._index = steps, index
             self._new_step(ctx, key)
 
     def _new_step(self, ctx: PluginContext, key: tuple | None) -> None:
         """Start a step clean: no plan, no line from the last step, nothing done, no offer, no goal; its default time.
 
-        Another action also drops the joints carried forward in the process panel.
+        Ignore built bars is off again, and Clearance on for another robot. Another action also drops the joints carried
+        forward in the process panel.
         """
         if self._message != self._moved_on:
             self._say("")
@@ -223,11 +231,15 @@ class AssemblyStepsPlugin(PlannerPlugin):
         self._ik_skip, self._ik_retry = 0, ""
         self.close_choice()
         self.minimum = math.nan
+        self.ignore_built = False
         self.serial, self._robot_name, self._has_target = None, "", key is not None
         if key is None:
             return
         loaded, action = key[0], key[1]
         self.serial = serial_of(loaded, action, ctx.config.robots)
+        if self._cleared_for not in (None, self.serial):
+            self.clearance.value = True
+        self._cleared_for = self.serial
         robot = loaded.process.actions[action].robot
         self._robot_name = loaded.process.robots[robot].name if robot else ""
         routine = self.routine()

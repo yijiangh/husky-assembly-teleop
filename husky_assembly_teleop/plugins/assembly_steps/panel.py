@@ -99,7 +99,8 @@ class StepsPanel:
         with ctx.view.ui(band=SETTINGS_BAND) as gui:
             gui.add_html(section("settings", SECTION_CTRL))
             self._ignore = gui.add_checkbox("Ignore built bars", False,
-                                            hint="Plan as if the built bars were not there: for tests in the air")
+                                            hint="Plan this step as if the built bars were not there: for tests in "
+                                                 "the air. Off again at the next step")
             self._diagnosis = gui.add_checkbox("Visual diagnosis", False,
                                                hint="The real robots see-through, and after each insert or retreat "
                                                     "plan its tool0 path with the Rhino and planned start and end "
@@ -139,8 +140,11 @@ class StepsPanel:
                                                  operator_only=True))
         commit.on_click(ctx.defer("exec", lambda: plugin._commit(ctx)))
         self._zero.on_click(ctx.defer("zero force", lambda: plugin.zero_force(ctx)))
-        self._time.on_update(ctx.defer_value("motion time", lambda value: plugin.set_traj_time(float(value))))
-        self._ignore.on_update(ctx.defer_value("ignore built bars", lambda value: plugin.set_ignore_built(bool(value))))
+        # ! Operator drags only: draw's own write comes back a tick or two late, and would give the next step its time.
+        self._time.on_update(ctx.defer_value("motion time", lambda value: plugin.set_traj_time(float(value)),
+                                             operator_only=True))
+        self._ignore.on_update(ctx.defer_value("ignore built bars", lambda value: plugin.set_ignore_built(bool(value)),
+                                               operator_only=True))
         # ! Operator clicks only: draw writes the box back, and viser calls back for that too, which could undo a
         #   click queued in the same tick.
         self._diagnosis.on_update(ctx.defer_value("visual diagnosis",

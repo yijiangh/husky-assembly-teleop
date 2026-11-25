@@ -241,9 +241,21 @@ class RunWrites:
         if self._refused("New run", self._step_running(ctx)):
             return
         self._starting = None
-        if await self._start(ctx, None) is not None:
-            self._say(f"new run {self._run.info.name}")
-            self._set_current(ctx, self._loaded.process.schedule[0])
+        kept = self._settings
+        # ! What moves a robot differently for one run's bars never goes over: the holds' grasps are as the process
+        #   panel shows them without a run, else as authored; the retreat stiff.
+        offsets = () if self._run is not None else tuple(
+            (hold, slide, roll) for hold, (slide, roll) in sorted(ctx.require("process").grasp_offsets.items()))
+        self._settings = replace(kept, grasp_offsets=offsets, retreat_compliant=False)
+        if await self._start(ctx, None) is None:
+            self._settings = kept
+            return
+        dropped = [what for what, gone in (("grasp offsets", kept.grasp_offsets != offsets),
+                                           ("Retreat compliant", kept.retreat_compliant)) if gone]
+        if dropped:
+            ctx.log_info(f"new run: {' and '.join(dropped)} not taken over from the last run")
+        self._say(f"new run {self._run.info.name}")
+        self._set_current(ctx, self._loaded.process.schedule[0])
 
     async def _continue(self, ctx: PluginContext, run: Run) -> None:
         """Write on in an offered run made on these files, or carry another export's run into a new one; then go on."""

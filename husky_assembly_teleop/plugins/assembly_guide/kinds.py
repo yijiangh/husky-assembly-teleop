@@ -232,7 +232,8 @@ class MoveKind(Kind):
         self._time = gui.add_slider("Motion time", min=1.0, max=MAX_TRAJ_TIME, step=0.5, initial_value=10.0,
                                     hint="How long the move takes, seconds; the arms' limits may need longer. "
                                          "Changeable until Go (a plan waiting for Go is timed again, its preview "
-                                         "too); greyed while the move runs, which keeps the time it was sent with")
+                                         "too); greyed while the move runs, which keeps the time it was sent with, "
+                                         "and while another part runs or waits for Go")
         self._time.on_update(ctx.defer_value("motion time", lambda value: self.guide.set_traj_time(float(value)),
                                              operator_only=True))
         self._rehearse(ctx, gui)
@@ -241,12 +242,15 @@ class MoveKind(Kind):
         """The goal line, and the motion time."""
         self._show_rehearse()
         self._goal.content = block(values(escape(self.guide.goal_text or "goal: solved at Prepare")))
-        if abs(self._time.value - self.guide.traj_time) > 1e-6:
-            self._time.value = self.guide.traj_time
-        # * The move sent has its timing: a change then would not reach it.
-        moving = self.guide.moving is part
-        if self._time.disabled != moving:
-            self._time.disabled = moving
+        seconds = self.guide.motion_time(part)
+        if abs(self._time.value - seconds) > 1e-6:
+            self._time.value = seconds
+        # * The move sent has its timing: a change then would not reach it. Another part's plan waiting for Go would
+        #   take it instead.
+        owner = self.guide.owner
+        greyed = self.guide.moving is part or owner is not None and owner is not part
+        if self._time.disabled != greyed:
+            self._time.disabled = greyed
 
     def live(self, ctx: PluginContext, part: GuidePart) -> list[Check]:
         """How far the arms still are from the goal."""
@@ -303,6 +307,11 @@ class HandKind(Kind):
         self.boxes = [gui.add_checkbox(f"box {index + 1}", False, visible=False) for index in range(HAND_BOXES)]
         self._items: list[tuple[str, str]] = []
         self._for: GuidePart | None = None
+
+    @property
+    def shown(self) -> GuidePart | None:
+        """The part the boxes are for, or None."""
+        return self._for
 
     @property
     def ticked(self) -> bool:

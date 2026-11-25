@@ -1432,3 +1432,28 @@ def test_a_placement_that_is_no_pose_is_refused(tmp_path):
 
     plugin = asyncio.run(scenario())
     assert plugin.view.settings == RunSettings() and not runs(lab)
+
+
+def test_a_new_run_takes_neither_the_grasp_offsets_nor_retreat_compliant_over(tmp_path):
+    """Both were for one run's bars: the new run's grasps are as authored, its retreat stiff; the rest goes over."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        process.grasp_offsets = {"B1_H": (20.0, -30.0)}
+        plugin.update(lab.ctx)
+        await settle(plugin)
+        plugin.request_settings(retreat_compliant=True, insert_push_n=7.0)
+        await settle(plugin)
+        assert plugin.view.settings.retreat_compliant
+        plugin.request_new_run()
+        lab.ctx.t += 1.0
+        plugin.request_new_run()
+        await settle(plugin)
+        plugin.update(lab.ctx)
+        return plugin, process
+
+    plugin, process = asyncio.run(scenario())
+    settings = plugin.view.settings
+    assert not settings.grasp_offsets and not settings.retreat_compliant and settings.insert_push_n == 7.0
+    assert process.grasp_offsets == {} and process.grasp_requests[-1] == {}
